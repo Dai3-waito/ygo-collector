@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   MAX_COLLECTION_SIZE,
-  MAX_SEARCH_RESULTS,
   MIN_SEARCH_LENGTH,
+  SEARCH_DISPLAY_LIMIT,
 } from '../lib/constants.js'
 import { DEFAULT_FOLDER } from '../lib/foldersStorage.js'
 import { detectImageLangFromQuery, IMAGE_LANG_OPTIONS } from '../lib/imageLang.js'
@@ -65,7 +65,7 @@ export default function AddCardForm({
         if (ownedIds.has(r.passcode)) return false
         return true
       })
-      .slice(0, MAX_SEARCH_RESULTS)
+      .slice(0, SEARCH_DISPLAY_LIMIT)
   }, [results, ownedIds])
 
   useEffect(() => {
@@ -87,7 +87,7 @@ export default function AddCardForm({
       setSearchError('')
       try {
         const found = await searchYgoCardsJa(q, {
-          maxResults: MAX_SEARCH_RESULTS,
+          maxResults: SEARCH_DISPLAY_LIMIT,
           signal: controller.signal,
           imageLang,
         })
@@ -181,7 +181,7 @@ export default function AddCardForm({
     >
       <p className="text-sm font-medium text-amber-100">カードを検索して追加</p>
       <p className="mt-1 text-xs text-zinc-400">
-        日本語名・ルビ・効果文・パスワードで検索（最大{MAX_SEARCH_RESULTS}件）
+        日本語名・ルビ・パスワードで検索（関連度の高い順・最大{SEARCH_DISPLAY_LIMIT}件）
       </p>
       <p className="mt-1 text-xs text-zinc-500">
         登録数: {collectionCount} / {MAX_COLLECTION_SIZE}
@@ -221,7 +221,9 @@ export default function AddCardForm({
 
       {search.trim().length >= MIN_SEARCH_LENGTH ? (
         <p className="mt-2 text-xs text-zinc-400">
-          {isSearching ? '…' : `${displayResults.length} 件表示`}
+          {isSearching
+            ? '…'
+            : `${displayResults.length} 件表示（名前一致を優先・効果文のみのヒットは下げています）`}
         </p>
       ) : null}
 
@@ -235,10 +237,11 @@ export default function AddCardForm({
             表示できる結果がありません
           </p>
         ) : (
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
             {displayResults.map((card) => {
               const isSelected = card.passcode === selectedPasscode
               const imgSrc = cardImageUrl(card.passcode, { lang: imageLang, size: 'half' })
+              const imgFallback = card.imageFallback ?? cardImageUrl(card.passcode, { lang: 'ygopro', size: 'half' })
               return (
                 <button
                   key={`${card.passcode}-${card.cid}`}
@@ -255,14 +258,28 @@ export default function AddCardForm({
                       src={imgSrc}
                       alt={card.name}
                       loading="lazy"
+                      decoding="async"
+                      onError={(e) => {
+                        if (e.currentTarget.src !== imgFallback) {
+                          e.currentTarget.src = imgFallback
+                        }
+                      }}
                       className="h-full w-full object-cover object-top"
                     />
+                    {card.nameMatch ? (
+                      <span className="absolute left-1 top-1 rounded bg-amber-400/90 px-1 py-0.5 text-[8px] font-medium text-zinc-950">
+                        名前
+                      </span>
+                    ) : null}
                   </div>
-                  <div className="p-1.5">
-                    <p className="line-clamp-2 text-[10px] font-medium leading-tight text-amber-100">
+                  <div className="p-2">
+                    <p className="line-clamp-2 text-[11px] font-medium leading-tight text-amber-100">
                       {card.name}
                     </p>
-                    <p className="mt-0.5 truncate text-[9px] text-zinc-500">{card.passcode}</p>
+                    {card.nameEn ? (
+                      <p className="mt-0.5 line-clamp-1 text-[9px] text-zinc-500">{card.nameEn}</p>
+                    ) : null}
+                    <p className="mt-0.5 truncate text-[9px] text-zinc-600">{card.passcode}</p>
                   </div>
                 </button>
               )

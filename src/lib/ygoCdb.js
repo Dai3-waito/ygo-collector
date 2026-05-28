@@ -1,4 +1,8 @@
-import { MAX_SEARCH_RESULTS } from './constants.js'
+import {
+  SEARCH_DISPLAY_LIMIT,
+  SEARCH_FETCH_PAGES_MAX,
+} from './constants.js'
+import { isStrongNameMatch, rankSearchResults, scoreSearchItem } from './searchRank.js'
 
 /** 開発: Vite proxy / 本番: Vercel api/ygo-search.js */
 const SEARCH_API = '/api/ygo-search'
@@ -20,9 +24,10 @@ export function cardImageUrl(passcode, { lang = 'jp', size = 'half' } = {}) {
   return `https://cdn.233.momobako.com/ygoimg/${webpLang}/${id}.webp${suffix}`
 }
 
-export function cdbItemToCatalog(item, imageLang = 'jp') {
+export function cdbItemToCatalog(item, imageLang = 'jp', query = '') {
   const passcode = String(item.id)
   const typeLine = item.text?.types ?? ''
+  const relevanceScore = scoreSearchItem(item, query)
   return {
     id: passcode,
     name: item.jp_name || item.sc_name || item.cn_name || item.en_name || passcode,
@@ -31,9 +36,13 @@ export function cdbItemToCatalog(item, imageLang = 'jp') {
     rarity: '',
     imageUrl: cardImageUrl(passcode, { lang: imageLang, size: 'half' }),
     imageThumb: cardImageUrl(passcode, { lang: imageLang, size: 'thumb' }),
+    imageFallback: cardImageUrl(passcode, { lang: 'ygopro', size: 'half' }),
     passcode,
     cid: item.cid,
     imageLang,
+    relevanceScore,
+    nameMatch: isStrongNameMatch(item, query),
+    apiWeight: item.weight ?? 0,
   }
 }
 
@@ -67,31 +76,30 @@ async function fetchSearchPage(query, start, signal) {
 }
 
 /**
- * 百鸽 ygocdb — 日本語名・効果テキストで検索
+ * 百鸽 ygocdb — 日本語検索（関連度順・重複除去）
  */
 export async function searchYgoCardsJa(
   query,
-  { maxResults = MAX_SEARCH_RESULTS, signal, imageLang = 'jp' } = {},
+  { maxResults = SEARCH_DISPLAY_LIMIT, signal, imageLang = 'jp' } = {},
 ) {
   const trimmed = query.trim()
   if (!trimmed) return []
 
-  const results = []
+  const rawItems = []
   let start = 0
+  let pages = 0
 
-  while (results.length < maxResults) {
+  while (pages < SEARCH_FETCH_PAGES_MAX) {
     const { items, nextStart } = await fetchSearchPage(trimmed, start, signal)
-
     if (items.length === 0) break
-
-    for (const item of items) {
-      results.push(cdbItemToCatalog(item, imageLang))
-      if (results.length >= maxResults) return results
-    }
-
+    rawItems.push(...items)
+    pages += 1
     if (!nextStart) break
     start = nextStart
   }
 
-  return results
+  const ranked = rankSearchResults(rawItems, trimmed)
+  return ranked
+    .slice(0, maxResults)
+    .map((item) => cdbItemToCatalog(item, imageLang, trimmed))
 }
