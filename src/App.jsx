@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { cards } from './data/cards.js'
+import { cards as masterCards } from './data/cards.js'
 import { packTotals } from './data/packTotals.js'
+import { supabase } from './lib/supabase.js'
 
 const CUSTOM_IMAGES_STORAGE_KEY = 'ygo-custom-images-v1'
 
@@ -39,12 +40,15 @@ function getRarityTheme(rarity) {
 }
 
 function App() {
+  const [cards, setCards] = useState(masterCards)
   const [query, setQuery] = useState('')
   const [sortBy, setSortBy] = useState('owned')
   const [brokenImages, setBrokenImages] = useState({})
   const [customImages, setCustomImages] = useState({})
   const [targetCardId, setTargetCardId] = useState('')
   const [saveMessage, setSaveMessage] = useState('')
+  const [isLoadingSupabase, setIsLoadingSupabase] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
   const fileInputRef = useRef(null)
 
   const normalizedQuery = normalizeForSearch(query)
@@ -92,6 +96,44 @@ function App() {
   const overallRate =
     overallOfficialTotal === 0 ? 0 : Math.round((overallOwnedKinds / overallOfficialTotal) * 100)
   const hasCustomImages = Object.keys(customImages).length > 0
+
+  useEffect(() => {
+    async function loadOwnedData() {
+      const hasEnv =
+        import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY
+      if (!hasEnv) return
+
+      setIsLoadingSupabase(true)
+      const { data, error } = await supabase
+        .from('user_cards')
+        .select('card_id, owned, location, collection_type')
+
+      setIsLoadingSupabase(false)
+
+      if (error) {
+        setSaveMessage(`Supabase読込エラー: ${error.message}`)
+        return
+      }
+
+      if (!data || data.length === 0) return
+
+      setCards(
+        masterCards.map((card) => {
+          const saved = data.find((row) => row.card_id === card.id)
+          if (!saved) return card
+          return {
+            ...card,
+            owned: saved.owned,
+            location: saved.location ?? card.location,
+            collectionType: saved.collection_type || card.collectionType,
+          }
+        }),
+      )
+      setSaveMessage(`Supabaseから ${data.length} 件の所持データを読み込みました`)
+    }
+
+    loadOwnedData()
+  }, [])
 
   useEffect(() => {
     try {
@@ -154,6 +196,45 @@ function App() {
     setSaveMessage('全画像をリセットしました')
   }
 
+  async function saveCardToSupabase(card) {
+    const hasEnv =
+      import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY
+    if (!hasEnv) {
+      setSaveMessage('Supabase未設定のため保存できません')
+      return false
+    }
+
+    setIsSaving(true)
+    const { error } = await supabase.from('user_cards').upsert(
+      {
+        card_id: card.id,
+        owned: card.owned,
+        location: card.location,
+        collection_type: card.collectionType,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'card_id' },
+    )
+    setIsSaving(false)
+
+    if (error) {
+      setSaveMessage(`保存エラー: ${error.message}`)
+      return false
+    }
+
+    setSaveMessage(`${card.name} を Supabase に保存しました`)
+    return true
+  }
+
+  async function changeOwned(cardId, delta) {
+    const card = cards.find((c) => c.id === cardId)
+    if (!card) return
+
+    const updated = { ...card, owned: Math.max(0, card.owned + delta) }
+    setCards((prev) => prev.map((c) => (c.id === cardId ? updated : c)))
+    await saveCardToSupabase(updated)
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_20%_0%,#262626_0%,#0a0a0a_45%,#030303_100%)] text-zinc-100">
       <div className="mx-auto max-w-7xl px-4 py-8 md:px-8">
@@ -165,6 +246,9 @@ function App() {
               <p className="mt-1 text-sm text-zinc-300">
                 Steamライブラリ風カードビュー（カード画像 / レアリティ / コンプリート率 / 所持数）
               </p>
+              {isLoadingSupabase ? (
+                <p className="mt-2 text-xs text-amber-300/80">Supabaseからデータ読込中...</p>
+              ) : null}
             </div>
             <div className="rounded-xl border border-amber-300/30 bg-zinc-950/70 px-4 py-2 text-right">
               <p className="text-xs text-zinc-400">全体コンプリート率</p>
@@ -205,8 +289,10 @@ function App() {
             全画像リセット
           </button>
         </div>
-        {saveMessage ? (
-          <p className="mb-4 text-xs text-amber-200/90">{saveMessage}</p>
+        {saveMessage || isSaving ? (
+          <p className="mb-4 text-xs text-amber-200/90">
+            {isSaving ? 'Supabaseに保存中...' : saveMessage}
+          </p>
         ) : null}
         <input
           ref={fileInputRef}
@@ -296,8 +382,26 @@ function App() {
                         <p className="text-base font-bold text-amber-200">{completion.rate}%</p>
                       </div>
                       <div className="rounded-lg bg-zinc-950/60 p-2">
-                        <p className="text-zinc-400">所持数</p>
-                        <p className="text-base font-bold text-zinc-100">{card.owned}</p>
+                        <p className="mb-1 text-zinc-400">所持数</p>
+                        <div className="flex items-center justify-between gap-1">
+                          <button
+                            type="button"
+                            onClick={() => changeOwned(card.id, -1)}
+                            disabled={card.owned <= 0 || isSaving}
+                            className="rounded border border-zinc-600 px-2 py-0.5 text-sm text-zinc-200 transition enabled:hover:bg-zinc-800 disabled:opacity-40"
+                          >
+                            −
+                          </button>
+                          <span className="text-base font-bold text-zinc-100">{card.owned}</span>
+                          <button
+                            type="button"
+                            onClick={() => changeOwned(card.id, 1)}
+                            disabled={isSaving}
+                            className="rounded border border-amber-300/40 px-2 py-0.5 text-sm text-amber-100 transition enabled:hover:bg-amber-300/10 disabled:opacity-40"
+                          >
+                            ＋
+                          </button>
+                        </div>
                       </div>
                     </div>
 
