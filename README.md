@@ -82,7 +82,6 @@ YGO Collector は
 
 ## 必要環境
 
-
 - Node.js
 - npm
 
@@ -93,3 +92,4 @@ YGO Collector は
 ```bash
 npm install
 npm run dev
+```
