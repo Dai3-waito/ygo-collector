@@ -111,7 +111,9 @@ npm run dev
 
 **Authentication** → **URL Configuration**
 
-- **Site URL:** `https://あなたの-app.vercel.app`
-- **Redirect URLs:** `https://あなたの-app.vercel.app/**`
+- **Site URL:** `https://ygo-collector.vercel.app`
+- **Redirect URLs:** `https://ygo-collector.vercel.app/**`
+
+環境変数を追加したあと、Vercel で **Redeploy** しないと反映されません（ビルド時に埋め込まれるため）。
 
 パスワード再設定メールのリンクが動くようにします。

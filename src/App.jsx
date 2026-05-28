@@ -29,16 +29,17 @@ function normalizeForSearch(input) {
 }
 
 function getRarityTheme(rarity) {
-  if (rarity.includes('25th') || rarity.includes('プリズマ')) {
+  const r = String(rarity ?? '')
+  if (r.includes('25th') || r.includes('プリズマ')) {
     return 'from-fuchsia-500/30 via-amber-300/20 to-cyan-400/25'
   }
-  if (rarity.includes('シークレット')) {
+  if (r.includes('シークレット')) {
     return 'from-indigo-500/30 via-zinc-500/20 to-amber-400/25'
   }
-  if (rarity.includes('ウルトラ')) {
+  if (r.includes('ウルトラ')) {
     return 'from-yellow-500/35 via-amber-400/25 to-orange-500/30'
   }
-  if (rarity.includes('スーパー')) {
+  if (r.includes('スーパー')) {
     return 'from-sky-500/30 via-zinc-500/20 to-violet-500/25'
   }
   return 'from-zinc-600/35 via-zinc-500/20 to-zinc-700/30'
@@ -71,18 +72,25 @@ function App() {
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [showProfile, setShowProfile] = useState(false)
   const [recoveryMode, setRecoveryMode] = useState(false)
+  const [authReady, setAuthReady] = useState(false)
   const fileInputRef = useRef(null)
 
   const userId = session?.user?.id
   const imagesStorageKey = userId ? `ygo-custom-images-${userId}` : 'ygo-custom-images-guest'
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session))
+    supabase.auth
+      .getSession()
+      .then(({ data }) => setSession(data.session))
+      .catch((error) => console.error('[auth] getSession failed', error))
+      .finally(() => setAuthReady(true))
+
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession)
       setRecoveryMode(event === 'PASSWORD_RECOVERY')
+      setAuthReady(true)
     })
-    return () => listener.subscription.unsubscribe()
+    return () => listener?.subscription?.unsubscribe()
   }, [])
 
   useEffect(() => {
@@ -270,7 +278,7 @@ function App() {
     const bCompletion = packCompletionMap[b.pack]?.rate ?? 0
     if (sortBy === 'owned') return b.owned - a.owned
     if (sortBy === 'completion') return bCompletion - aCompletion
-    if (sortBy === 'name') return a.name.localeCompare(b.name, 'ja')
+    if (sortBy === 'name') return String(a.name ?? '').localeCompare(String(b.name ?? ''), 'ja')
     return 0
   })
 
@@ -284,6 +292,14 @@ function App() {
   )
   const overallRate =
     overallOfficialTotal === 0 ? 0 : Math.round((overallOwnedKinds / overallOfficialTotal) * 100)
+
+  if (!authReady) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-zinc-300">
+        <p className="text-sm">読込中...</p>
+      </div>
+    )
+  }
 
   if (recoveryMode && session) {
     return (
