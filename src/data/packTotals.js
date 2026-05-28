@@ -1,3 +1,4 @@
+/** API で取得できない場合のみ使う参考値 */
 export const packTotals = {
   'QUARTER CENTURY CHRONICLE side:UNITY': 200,
   'QUARTER CENTURY DUELIST BOX': 40,

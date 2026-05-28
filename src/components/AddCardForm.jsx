@@ -7,23 +7,43 @@ import {
 import { DEFAULT_FOLDER } from '../lib/foldersStorage.js'
 import { detectImageLangFromQuery, IMAGE_LANG_OPTIONS } from '../lib/imageLang.js'
 import { fetchCardPrints } from '../lib/ygoPrints.js'
-import { cardImageUrl, searchYgoCardsJa } from '../lib/ygoCdb.js'
+import { cardImageUrl, lookupCdbBySetCode } from '../lib/ygoCdb.js'
+import { searchCardsReliable } from '../lib/cardSearch.js'
+import { resolveCanonicalPackName } from '../lib/packTotalsStorage.js'
 
 function printKey(print) {
   return `${print.setCode}|${print.rarity}`
 }
 
-function buildCardFromSelection(entry, print, folder, imageLang) {
+function resultKey(entry) {
+  return `${entry.passcode}-${entry.cid ?? ''}`
+}
+
+function imageKeyForEntry(entry, printCdbEntry) {
+  if (
+    printCdbEntry &&
+    String(printCdbEntry.passcode) === String(entry?.passcode) &&
+    printCdbEntry.cid
+  ) {
+    return printCdbEntry.cid
+  }
+  return entry?.cid ?? entry?.passcode
+}
+
+function buildCardFromSelection(entry, print, folder, imageLang, printCdbEntry) {
   const cardId = print?.setCode ?? entry.passcode
+  const imageKey = imageKeyForEntry(entry, printCdbEntry)
+  const packRaw = print?.setName ?? entry.pack
   return {
     id: cardId,
     name: entry.name,
-    pack: print?.setName ?? entry.pack,
+    pack: resolveCanonicalPackName(packRaw) || packRaw,
     rarity: print?.rarity ?? '',
-    imageUrl: cardImageUrl(entry.passcode, { lang: imageLang, size: 'full' }),
+    imageUrl: cardImageUrl(imageKey, { lang: imageLang, size: 'full' }),
+    imageFallback: cardImageUrl(entry.passcode, { lang: 'ygopro', size: 'full' }),
     owned: 1,
     location: '',
-    collectionType: '初版',
+    collectionType: '',
     folder: folder || DEFAULT_FOLDER,
     passcode: entry.passcode,
   }
@@ -40,6 +60,7 @@ export default function AddCardForm({
   const [imageLang, setImageLang] = useState('jp')
   const [results, setResults] = useState([])
   const [selectedPasscode, setSelectedPasscode] = useState('')
+  const [selectedResultKey, setSelectedResultKey] = useState('')
   const [prints, setPrints] = useState([])
   const [selectedPrintKey, setSelectedPrintKey] = useState('')
   const [loadingPrints, setLoadingPrints] = useState(false)
@@ -48,25 +69,38 @@ export default function AddCardForm({
   const [folder, setFolder] = useState(DEFAULT_FOLDER)
   const [isSearching, setIsSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
+  const [printCdbEntry, setPrintCdbEntry] = useState(null)
 
   const ownedIds = useMemo(() => new Set(ownedCards.map((c) => c.id)), [ownedCards])
   const atCollectionLimit = collectionCount >= MAX_COLLECTION_SIZE
 
-  const selectedEntry = results.find((r) => r.passcode === selectedPasscode)
+  const selectedEntry = results.find((r) => resultKey(r) === selectedResultKey)
   const selectedPrint = prints.find((p) => printKey(p) === selectedPrintKey)
 
   const previewCard = selectedEntry
-    ? buildCardFromSelection(selectedEntry, selectedPrint ?? prints[0], folder, imageLang)
+    ? buildCardFromSelection(
+        selectedEntry,
+        selectedPrint ?? prints[0],
+        folder,
+        imageLang,
+        null,
+      )
     : null
 
-  const displayResults = useMemo(() => {
-    return results
-      .filter((r) => {
-        if (ownedIds.has(r.passcode)) return false
-        return true
-      })
-      .slice(0, SEARCH_DISPLAY_LIMIT)
-  }, [results, ownedIds])
+  const previewImageSrc =
+    selectedEntry?.imageUrl ??
+    cardImageUrl(selectedEntry?.cid ?? selectedEntry?.passcode, {
+      lang: imageLang,
+      size: 'half',
+    })
+  const previewImageFallback =
+    selectedEntry?.imageFallback ??
+    cardImageUrl(selectedEntry?.passcode, { lang: 'ygopro', size: 'half' })
+
+  const displayResults = useMemo(
+    () => results.slice(0, SEARCH_DISPLAY_LIMIT),
+    [results],
+  )
 
   useEffect(() => {
     setImageLang(detectImageLangFromQuery(search))
@@ -86,7 +120,7 @@ export default function AddCardForm({
       setIsSearching(true)
       setSearchError('')
       try {
-        const found = await searchYgoCardsJa(q, {
+        const found = await searchCardsReliable(q, {
           maxResults: SEARCH_DISPLAY_LIMIT,
           signal: controller.signal,
           imageLang,
@@ -114,6 +148,7 @@ export default function AddCardForm({
     if (!selectedPasscode) {
       setPrints([])
       setSelectedPrintKey('')
+      setPrintCdbEntry(null)
       return
     }
 
@@ -137,8 +172,30 @@ export default function AddCardForm({
     return () => controller.abort()
   }, [selectedPasscode])
 
+  useEffect(() => {
+    const setCode = selectedPrint?.setCode
+    if (!setCode) {
+      setPrintCdbEntry(null)
+      return
+    }
+
+    const controller = new AbortController()
+    lookupCdbBySetCode(setCode, { signal: controller.signal, imageLang })
+      .then((entry) => {
+        if (!controller.signal.aborted) setPrintCdbEntry(entry)
+      })
+      .catch((error) => {
+        if (error.name === 'AbortError') return
+        if (!controller.signal.aborted) setPrintCdbEntry(null)
+      })
+
+    return () => controller.abort()
+  }, [selectedPrintKey, selectedPrint?.setCode, imageLang])
+
   function handleSelect(card) {
+    setSelectedResultKey(resultKey(card))
     setSelectedPasscode(card.passcode)
+    setPrintCdbEntry(null)
     setOwned(1)
     setLocation('')
   }
@@ -152,6 +209,7 @@ export default function AddCardForm({
       selectedPrint ?? prints[0],
       folder,
       imageLang,
+      printCdbEntry,
     )
 
     if (ownedIds.has(card.id)) {
@@ -195,6 +253,7 @@ export default function AddCardForm({
           onChange={(e) => {
             setSearch(e.target.value)
             setSelectedPasscode('')
+            setSelectedResultKey('')
           }}
           className="min-w-[200px] flex-1 rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-300"
         />
@@ -239,9 +298,13 @@ export default function AddCardForm({
         ) : (
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
             {displayResults.map((card) => {
-              const isSelected = card.passcode === selectedPasscode
-              const imgSrc = cardImageUrl(card.passcode, { lang: imageLang, size: 'half' })
-              const imgFallback = card.imageFallback ?? cardImageUrl(card.passcode, { lang: 'ygopro', size: 'half' })
+              const isSelected = resultKey(card) === selectedResultKey
+              const imageKey = card.cid ?? card.passcode
+              const imgSrc =
+                card.imageUrl ?? cardImageUrl(imageKey, { lang: imageLang, size: 'half' })
+              const imgFallback =
+                card.imageFallback ??
+                cardImageUrl(card.passcode, { lang: 'ygopro', size: 'half' })
               return (
                 <button
                   key={`${card.passcode}-${card.cid}`}
@@ -291,11 +354,16 @@ export default function AddCardForm({
       {selectedEntry ? (
         <div className="mt-4 space-y-3 rounded-lg border border-amber-300/15 bg-zinc-950/50 p-3">
           <div className="flex gap-3">
-            {previewCard ? (
+            {selectedEntry ? (
               <img
-                src={cardImageUrl(selectedEntry.passcode, { lang: imageLang, size: 'half' })}
+                src={previewImageSrc}
                 alt={selectedEntry.name}
-                className="h-36 w-[5.5rem] shrink-0 rounded object-cover object-top shadow-lg"
+                onError={(e) => {
+                  if (e.currentTarget.src !== previewImageFallback) {
+                    e.currentTarget.src = previewImageFallback
+                  }
+                }}
+                className="h-36 w-[5.5rem] shrink-0 rounded object-cover object-top shadow-lg ring-1 ring-amber-400/30"
               />
             ) : null}
             <div className="min-w-0 flex-1">

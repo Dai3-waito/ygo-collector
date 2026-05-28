@@ -18,7 +18,7 @@ export function rowToCard(row, userId) {
     imageUrl: row.image_url || `/cards/${row.card_id}.jpg`,
     owned: row.owned ?? 0,
     location: row.location ?? '',
-    collectionType: row.collection_type ?? '初版',
+    collectionType: row.collection_type ?? '',
     folder,
   }
 }

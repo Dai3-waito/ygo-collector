@@ -1,10 +1,11 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { neuronApiDevPlugin } from './vite-neuron-api.js'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), neuronApiDevPlugin()],
   server: {
     proxy: {
       '/api/ygo-search': {
@@ -18,12 +19,33 @@ export default defineConfig({
           return `/api/v0/?search=${encodeURIComponent(search)}&start=${start}`
         },
       },
+      '/api/ygo-prodeck-search': {
+        target: 'https://db.ygoprodeck.com',
+        changeOrigin: true,
+        rewrite: (path) => {
+          const query = path.includes('?') ? path.slice(path.indexOf('?')) : ''
+          return `/api/v7/cardinfo.php${query}`
+        },
+      },
       '/api/ygo-prints': {
         target: 'https://db.ygoprodeck.com',
         changeOrigin: true,
         rewrite: (path) => {
           const query = path.includes('?') ? path.slice(path.indexOf('?')) : ''
           return `/api/v7/cardinfo.php${query}`
+        },
+      },
+      '/api/ygo-cardsets': {
+        target: 'https://db.ygoprodeck.com',
+        changeOrigin: true,
+        rewrite: () => '/api/v7/cardsets.php',
+      },
+      '/api/ygo-setinfo': {
+        target: 'https://db.ygoprodeck.com',
+        changeOrigin: true,
+        rewrite: (path) => {
+          const query = path.includes('?') ? path.slice(path.indexOf('?')) : ''
+          return `/api/v7/cardsetsinfo.php${query}`
         },
       },
     },

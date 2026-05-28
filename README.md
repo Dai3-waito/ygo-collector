@@ -46,7 +46,7 @@ YGO Collector は
 ## コンプ率表示
 - パック別コンプリート率
 - レアリティ別収集率
-- 未所持カード一覧
+- パック別コレクション率（別タブ・YGOPRODeck セット情報から自動取得）
 
 ---
 
@@ -96,6 +96,13 @@ npm run dev
 
 `.env` を `.env.example` からコピーし、Supabase の URL / anon キーを設定してください。
 
+## マルチユーザー
+
+- **新規登録** / **ログイン** で誰でも利用可能（Supabase Auth）
+- 各ユーザーのカードは **RLS** により自分のデータだけ見える・編集できる
+- **初回ログイン時はカード0枚**（自動サンプル登録なし）
+- Supabase → **Authentication** → **Providers** で **Email** を有効化すること
+
 ---
 
 # Vercel に公開
@@ -127,3 +134,12 @@ alter table user_cards add column if not exists folder text default '';
 （`supabase/migration-folder.sql` と同じ）
 
 パスワード再設定メールのリンクが動くようにします。
+
+## パック別コンプ率
+
+- ヘッダーの **「コレクション率」** タブで表示（一覧タブとは分離）
+- 公式の総種類数は **遊戯王ニューロン「収録」の「全○○枚」** を最優先（`/api/ygo-neuron-list`・`/api/ygo-neuron-pack`）
+- レアリティ別の分母は **YGOPRODeck**（`/api/ygo-set-rarities`）を優先し、取得できないパックは **ニューロン収録**（`/api/ygo-neuron-pack-rarities`）で全レアリティを補完
+- 取得できない場合は **YGOPRODeck**（セット名・型番 `LEDE` 等）と `packTotals.js` 参考値で補完
+- 「公式でこのパックを確認」は収録ページ（`ope=1&pid=...`）へ直接リンク
+- パック名のゆれは `src/data/packCatalog.js` で照合

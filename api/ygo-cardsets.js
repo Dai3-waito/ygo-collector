@@ -1,7 +1,4 @@
-/**
- * 百鸽 ygocdb.com プロキシ（日本語検索・CORS 回避）
- * @see https://ygocdb.com/api
- */
+/** YGOPRODeck — 全カードセット一覧（公式種類数の参照） */
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*')
@@ -15,28 +12,13 @@ export default async function handler(req, res) {
     return
   }
 
-  const search = String(req.query.search ?? req.query.fname ?? '').trim()
-  if (search.length < 2) {
-    res.status(400).json({ error: 'search must be at least 2 characters' })
-    return
-  }
-
-  const start = String(req.query.start ?? req.query.offset ?? '0')
-  const params = new URLSearchParams({ search, start })
-
   try {
-    const upstream = await fetch(`https://ygocdb.com/api/v0/?${params}`, {
+    const upstream = await fetch('https://db.ygoprodeck.com/api/v7/cardsets.php', {
       headers: { 'User-Agent': 'ygo-collector/1.0' },
     })
     const text = await upstream.text()
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Content-Type', 'application/json')
-
-    if (upstream.status === 400) {
-      res.status(200).send(JSON.stringify({ result: [], next: 0 }))
-      return
-    }
-
     res.status(upstream.status).send(text)
   } catch {
     res.status(502).json({ error: 'Upstream request failed' })

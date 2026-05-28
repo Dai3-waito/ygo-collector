@@ -1,7 +1,7 @@
 import { MAX_SEARCH_RESULTS, YGO_API_PAGE_SIZE } from './constants.js'
 
-/** 開発: Vite proxy / 本番: Vercel api/ygo-search.js */
-const SEARCH_API = '/api/ygo-search'
+/** 開発: Vite proxy / 本番: Vercel api/ygo-prodeck-search.js */
+const PRODECK_SEARCH_API = '/api/ygo-prodeck-search'
 
 function isJpSetCode(setCode) {
   return /-JP\d*$|-JP[A-Z]?$/i.test(setCode ?? '')
@@ -46,7 +46,7 @@ export function expandCardPrints(apiCard) {
 async function fetchCardPage(params, signal) {
   let res
   try {
-    res = await fetch(`${SEARCH_API}?${params}`, { signal })
+    res = await fetch(`${PRODECK_SEARCH_API}?${params}`, { signal })
   } catch (error) {
     if (error.name === 'AbortError') throw error
     throw new Error(

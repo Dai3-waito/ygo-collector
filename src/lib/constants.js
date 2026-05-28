@@ -12,3 +12,6 @@ export const MAX_SEARCH_RESULTS = SEARCH_DISPLAY_LIMIT
 
 /** カード検索を開始する最小文字数 */
 export const MIN_SEARCH_LENGTH = 2
+
+/** YGOPRODeck cardinfo 1ページあたりの件数 */
+export const YGO_API_PAGE_SIZE = 100

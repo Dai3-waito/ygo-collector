@@ -2,15 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import AddCardForm from './components/AddCardForm.jsx'
 import AuthPanel from './components/AuthPanel.jsx'
 import FolderBar from './components/FolderBar.jsx'
+import PackCompletionPanel from './components/PackCompletionPanel.jsx'
 import ProfileModal from './components/ProfileModal.jsx'
 import ResetPasswordPanel from './components/ResetPasswordPanel.jsx'
-import {
-  deleteUserCard,
-  fetchUserCards,
-  seedUserCards,
-  upsertUserCard,
-} from './lib/cardsApi.js'
-import { packTotals } from './data/packTotals.js'
+import { deleteUserCard, fetchUserCards, upsertUserCard } from './lib/cardsApi.js'
+import { getRarityTheme } from './lib/cardUi.jsx'
+import { computePackCompletionList } from './lib/packCompletion.js'
+import { loadOfficialPackData } from './lib/packOfficialApi.js'
+import { resolveCanonicalPackName } from './lib/packTotalsStorage.js'
 import { MAX_COLLECTION_SIZE } from './lib/constants.js'
 import {
   addFolderName,
@@ -21,22 +20,7 @@ import {
 import { normalizeForSearch } from './lib/searchUtils.js'
 import { supabase } from './lib/supabase.js'
 
-function getRarityTheme(rarity) {
-  const r = String(rarity ?? '')
-  if (r.includes('25th') || r.includes('プリズマ')) {
-    return 'from-fuchsia-500/30 via-amber-300/20 to-cyan-400/25'
-  }
-  if (r.includes('シークレット')) {
-    return 'from-indigo-500/30 via-zinc-500/20 to-amber-400/25'
-  }
-  if (r.includes('ウルトラ')) {
-    return 'from-yellow-500/35 via-amber-400/25 to-orange-500/30'
-  }
-  if (r.includes('スーパー')) {
-    return 'from-sky-500/30 via-zinc-500/20 to-violet-500/25'
-  }
-  return 'from-zinc-600/35 via-zinc-500/20 to-zinc-700/30'
-}
+const TAB_STORAGE_KEY = 'ygo-active-tab'
 
 function App() {
   const [session, setSession] = useState(null)
@@ -56,6 +40,10 @@ function App() {
   const [authReady, setAuthReady] = useState(false)
   const [folders, setFolders] = useState([DEFAULT_FOLDER])
   const [activeFolder, setActiveFolder] = useState('all')
+  const [activeTab, setActiveTab] = useState('collection')
+  const [officialData, setOfficialData] = useState(null)
+  const [isLoadingOfficial, setIsLoadingOfficial] = useState(false)
+  const [loadOfficialError, setLoadOfficialError] = useState('')
   const fileInputRef = useRef(null)
 
   const userId = session?.user?.id
@@ -84,7 +72,56 @@ function App() {
     }
     setFolders(loadFolders(userId))
     loadUserCards(userId)
+
+    try {
+      const savedTab = localStorage.getItem(`${TAB_STORAGE_KEY}-${userId}`)
+      if (savedTab === 'collection' || savedTab === 'completion') setActiveTab(savedTab)
+    } catch {
+      // ignore
+    }
   }, [userId])
+
+  useEffect(() => {
+    if (!userId) {
+      setOfficialData(null)
+      return
+    }
+
+    const controller = new AbortController()
+    setIsLoadingOfficial(true)
+    setLoadOfficialError('')
+
+    loadOfficialPackData(cards, controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) {
+          setOfficialData(data)
+          if (data.errors?.length) {
+            setLoadOfficialError(data.errors.join(' / '))
+          }
+        }
+      })
+      .catch((error) => {
+        if (error.name === 'AbortError') return
+        if (!controller.signal.aborted) {
+          setOfficialData(null)
+          setLoadOfficialError(error.message || '公式データの取得に失敗しました')
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsLoadingOfficial(false)
+      })
+
+    return () => controller.abort()
+  }, [userId, cards])
+
+  useEffect(() => {
+    if (!userId) return
+    try {
+      localStorage.setItem(`${TAB_STORAGE_KEY}-${userId}`, activeTab)
+    } catch {
+      // ignore
+    }
+  }, [activeTab, userId])
 
   function mergeFoldersFromCards(list, uid) {
     const fromCards = list.map((c) => c.folder).filter(Boolean)
@@ -117,14 +154,13 @@ function App() {
     setIsLoading(true)
     setSaveMessage('')
     try {
-      let list = await fetchUserCards(uid)
-      if (list.length === 0) {
-        list = await seedUserCards(uid)
-        setSaveMessage('初回ログイン: サンプルカードを登録しました')
-      } else {
-        setSaveMessage(`${list.length} 件のカードを読み込みました`)
-      }
+      const list = await fetchUserCards(uid)
       setCards(list)
+      setSaveMessage(
+        list.length === 0
+          ? 'コレクションは空です。「＋ カードを追加」から登録してください。'
+          : `${list.length} 件のカードを読み込みました`,
+      )
       mergeFoldersFromCards(list, uid)
     } catch (error) {
       setSaveMessage(`読込エラー: ${error.message}`)
@@ -268,18 +304,22 @@ function App() {
   const normalizedQuery = normalizeForSearch(query)
   const queryTokens = normalizedQuery ? normalizedQuery.split(' ').filter(Boolean) : []
 
-  const ownedByPack = cards.reduce((acc, card) => {
-    if (!acc[card.pack]) acc[card.pack] = 0
-    if (card.owned > 0) acc[card.pack] += 1
-    return acc
-  }, {})
+  const packCompletionList = useMemo(
+    () => computePackCompletionList(cards, officialData),
+    [cards, officialData],
+  )
 
-  const packCompletionMap = Object.fromEntries(
-    Object.entries(packTotals).map(([pack, officialTotal]) => {
-      const ownedKinds = ownedByPack[pack] ?? 0
-      const rate = officialTotal === 0 ? 0 : Math.round((ownedKinds / officialTotal) * 100)
-      return [pack, { rate, ownedKinds, officialTotal }]
-    }),
+  const packCompletionMap = useMemo(
+    () =>
+      Object.fromEntries(
+        packCompletionList.map(
+          ({ pack, rate, ownedKinds, officialTotal, usesOfficialDenominator }) => [
+            pack,
+            { rate, ownedKinds, officialTotal, usesOfficialDenominator },
+          ],
+        ),
+      ),
+    [packCompletionList],
   )
 
   const folderFilteredCards = useMemo(() => {
@@ -303,24 +343,13 @@ function App() {
   })
 
   const sortedCards = [...filteredCards].sort((a, b) => {
-    const aCompletion = packCompletionMap[a.pack]?.rate ?? 0
-    const bCompletion = packCompletionMap[b.pack]?.rate ?? 0
+    const aCompletion = packCompletionMap[resolveCanonicalPackName(a.pack)]?.rate ?? 0
+    const bCompletion = packCompletionMap[resolveCanonicalPackName(b.pack)]?.rate ?? 0
     if (sortBy === 'owned') return b.owned - a.owned
     if (sortBy === 'completion') return bCompletion - aCompletion
     if (sortBy === 'name') return String(a.name ?? '').localeCompare(String(b.name ?? ''), 'ja')
     return 0
   })
-
-  const overallOwnedKinds = Object.values(packCompletionMap).reduce(
-    (sum, item) => sum + item.ownedKinds,
-    0,
-  )
-  const overallOfficialTotal = Object.values(packCompletionMap).reduce(
-    (sum, item) => sum + item.officialTotal,
-    0,
-  )
-  const overallRate =
-    overallOfficialTotal === 0 ? 0 : Math.round((overallOwnedKinds / overallOfficialTotal) * 100)
 
   if (!authReady) {
     return (
@@ -358,17 +387,15 @@ function App() {
               <p className="text-xs uppercase tracking-[0.35em] text-amber-300/80">
                 YGO Collection Library
               </p>
-              <h1 className="mt-2 text-2xl font-bold text-amber-100 md:text-3xl">コレクション一覧</h1>
+              <h1 className="mt-2 text-2xl font-bold text-amber-100 md:text-3xl">
+                {activeTab === 'completion' ? 'コレクション率' : 'コレクション一覧'}
+              </h1>
               <p className="mt-1 text-sm text-zinc-400">{session.user.email}</p>
               {isLoading ? (
                 <p className="mt-2 text-xs text-amber-300/80">読込中...</p>
               ) : null}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <div className="rounded-xl border border-amber-300/30 bg-zinc-950/70 px-4 py-2 text-right">
-                <p className="text-xs text-zinc-400">全体コンプリート率</p>
-                <p className="text-2xl font-bold text-amber-200">{overallRate}%</p>
-              </div>
               <button
                 type="button"
                 onClick={() => setShowProfile(true)}
@@ -385,70 +412,110 @@ function App() {
               </button>
             </div>
           </div>
+
+          <nav className="mt-4 flex gap-2 border-t border-amber-300/15 pt-4">
+            <button
+              type="button"
+              onClick={() => setActiveTab('collection')}
+              className={`rounded-lg px-4 py-2 text-sm transition ${
+                activeTab === 'collection'
+                  ? 'border border-amber-300/50 bg-amber-300/15 text-amber-100'
+                  : 'border border-transparent text-zinc-400 hover:bg-zinc-800/80 hover:text-zinc-200'
+              }`}
+            >
+              コレクション
+              <span className="ml-2 text-xs text-zinc-500">{cards.length}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('completion')}
+              className={`rounded-lg px-4 py-2 text-sm transition ${
+                activeTab === 'completion'
+                  ? 'border border-amber-300/50 bg-amber-300/15 text-amber-100'
+                  : 'border border-transparent text-zinc-400 hover:bg-zinc-800/80 hover:text-zinc-200'
+              }`}
+            >
+              コレクション率
+              {packCompletionList.length > 0 ? (
+                <span className="ml-2 text-xs text-zinc-500">
+                  {packCompletionList.length} パック
+                </span>
+              ) : null}
+            </button>
+          </nav>
         </header>
 
-        <section className="mb-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setShowAddForm((v) => !v)}
-            className="rounded-lg border border-amber-300/40 bg-amber-300/10 px-4 py-2 text-sm text-amber-100 hover:bg-amber-300/20"
-          >
-            {showAddForm ? '追加フォームを閉じる' : '＋ カードを追加'}
-          </button>
-        </section>
-
-        {showAddForm ? (
-          <AddCardForm
-            ownedCards={cards}
-            folders={folders}
-            collectionCount={cards.length}
-            onAdd={handleAddCard}
-            isSaving={isSaving}
+        {activeTab === 'completion' ? (
+          <PackCompletionPanel
+            cards={cards}
+            officialData={officialData}
+            isLoadingOfficial={isLoadingOfficial}
+            loadOfficialError={loadOfficialError}
           />
-        ) : null}
+        ) : (
+          <>
+            <section className="mb-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAddForm((v) => !v)}
+                className="rounded-lg border border-amber-300/40 bg-amber-300/10 px-4 py-2 text-sm text-amber-100 hover:bg-amber-300/20"
+              >
+                {showAddForm ? '追加フォームを閉じる' : '＋ カードを追加'}
+              </button>
+            </section>
 
-        <FolderBar
-          folders={folders}
-          activeFolder={activeFolder}
-          onSelectFolder={setActiveFolder}
-          onAddFolder={handleAddFolder}
-          cardCounts={folderCounts}
-        />
+            {showAddForm ? (
+              <AddCardForm
+                ownedCards={cards}
+                folders={folders}
+                collectionCount={cards.length}
+                onAdd={handleAddCard}
+                isSaving={isSaving}
+              />
+            ) : null}
 
-        <section className="mb-6 grid gap-3 md:grid-cols-[1fr_220px]">
-          <input
-            type="text"
-            placeholder="カード名・パック名・型番で検索"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="w-full rounded-xl border border-amber-300/30 bg-zinc-900/80 px-4 py-3 text-zinc-100 outline-none focus:border-amber-300"
-          />
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value)}
-            className="rounded-xl border border-amber-300/30 bg-zinc-900/80 px-3 py-3 text-sm"
-          >
-            <option value="owned">所持数順</option>
-            <option value="completion">コンプ率順</option>
-            <option value="name">名前順</option>
-          </select>
-        </section>
+            <FolderBar
+              folders={folders}
+              activeFolder={activeFolder}
+              onSelectFolder={setActiveFolder}
+              onAddFolder={handleAddFolder}
+              cardCounts={folderCounts}
+            />
 
-        {saveMessage || isSaving ? (
-          <p className="mb-4 text-xs text-amber-200/90">
-            {isSaving ? '保存中...' : saveMessage}
-          </p>
-        ) : null}
+            <section className="mb-6 grid gap-3 md:grid-cols-[1fr_220px]">
+              <input
+                type="text"
+                placeholder="カード名・パック名・型番で検索"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="w-full rounded-xl border border-amber-300/30 bg-zinc-900/80 px-4 py-3 text-zinc-100 outline-none focus:border-amber-300"
+              />
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="rounded-xl border border-amber-300/30 bg-zinc-900/80 px-3 py-3 text-sm"
+              >
+                <option value="owned">所持数順</option>
+                <option value="completion">コンプ率順</option>
+                <option value="name">名前順</option>
+              </select>
+            </section>
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={handleImageChange}
-        />
+            {saveMessage || isSaving ? (
+              <p className="mb-4 text-xs text-amber-200/90">
+                {isSaving ? '保存中...' : saveMessage}
+              </p>
+            ) : null}
 
-        {sortedCards.length === 0 ? (
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleImageChange}
+            />
+
+            {sortedCards.length === 0 ? (
           <section className="rounded-2xl border border-amber-300/20 bg-zinc-900/60 p-10 text-center">
             <p className="text-zinc-300">カードがありません。「＋ カードを追加」から登録してください。</p>
           </section>
@@ -456,7 +523,12 @@ function App() {
           <section className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {sortedCards.map((card) => {
               const completion =
-                packCompletionMap[card.pack] ?? { rate: 0, ownedKinds: 0, officialTotal: 0 }
+                packCompletionMap[resolveCanonicalPackName(card.pack)] ?? {
+                  rate: null,
+                  ownedKinds: 0,
+                  officialTotal: null,
+                  usesOfficialDenominator: false,
+                }
               const imageSrc = customImages[card.id] || card.imageUrl
               const showImage = imageSrc && !brokenImages[card.id]
               return (
@@ -495,14 +567,22 @@ function App() {
                   </button>
 
                   <div className="space-y-3 p-4">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate rounded-full border border-amber-300/35 bg-amber-200/10 px-2.5 py-1 text-xs text-amber-200">
+                    {card.pack ? (
+                      <div className="rounded-xl border border-amber-800/35 bg-[linear-gradient(135deg,#2a2218_0%,#141210_55%,#1a1614_100%)] px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,220,150,0.06)]">
+                        <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-amber-600/90">
+                          収録パック
+                        </p>
+                        <p className="mt-0.5 text-sm font-semibold leading-snug text-amber-50">
+                          {card.pack}
+                        </p>
+                      </div>
+                    ) : null}
+
+                    {card.rarity ? (
+                      <span className="inline-block truncate rounded-full border border-amber-300/35 bg-amber-200/10 px-2.5 py-1 text-xs text-amber-200">
                         {card.rarity}
                       </span>
-                      <span className="rounded-full border border-zinc-700 bg-zinc-950/50 px-2.5 py-1 text-xs text-zinc-300">
-                        {card.collectionType}
-                      </span>
-                    </div>
+                    ) : null}
 
                     <div>
                       <label className="mb-1 block text-[11px] text-zinc-400">フォルダ</label>
@@ -540,7 +620,9 @@ function App() {
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <div className="rounded-lg bg-zinc-950/60 p-2">
                         <p className="text-zinc-400">コンプ率</p>
-                        <p className="text-base font-bold text-amber-200">{completion.rate}%</p>
+                        <p className="text-base font-bold text-amber-200">
+                          {completion.rate != null ? `${completion.rate}%` : '—'}
+                        </p>
                       </div>
                       <div className="rounded-lg bg-zinc-950/60 p-2">
                         <p className="mb-1 text-zinc-400">所持数</p>
@@ -579,6 +661,8 @@ function App() {
               )
             })}
           </section>
+        )}
+          </>
         )}
       </div>
 
