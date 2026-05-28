@@ -93,3 +93,25 @@ YGO Collector は
 npm install
 npm run dev
 ```
+
+`.env` を `.env.example` からコピーし、Supabase の URL / anon キーを設定してください。
+
+---
+
+# Vercel に公開
+
+1. [GitHub](https://github.com/Dai3-waito/ygo-collector) のリポジトリを Vercel に Import
+2. **Framework Preset:** Vite
+3. **Environment Variables** に追加:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+4. Deploy
+
+## Supabase 側の設定（公開後必須）
+
+**Authentication** → **URL Configuration**
+
+- **Site URL:** `https://あなたの-app.vercel.app`
+- **Redirect URLs:** `https://あなたの-app.vercel.app/**`
+
+パスワード再設定メールのリンクが動くようにします。
