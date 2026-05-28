@@ -81,6 +81,96 @@ async function fetchCardPage(params, signal) {
 /**
  * YGOPRODeck で fuzzy 検索（最大 maxResults 件までページング）
  */
+/** テーマ（アーキタイプ）で検索 */
+export async function searchYgoCardsByArchetype(
+  archetype,
+  { maxResults = MAX_SEARCH_RESULTS, signal } = {},
+) {
+  const name = String(archetype ?? '').trim()
+  if (!name) return []
+
+  const results = []
+  let offset = 0
+
+  while (results.length < maxResults) {
+    const params = new URLSearchParams({
+      archetype: name,
+      num: String(YGO_API_PAGE_SIZE),
+      offset: String(offset),
+      misc: 'yes',
+    })
+
+    const { data: batch, noMore } = await fetchCardPage(params, signal)
+    if (batch.length === 0) break
+
+    for (const card of batch) {
+      results.push({
+        id: `YGO-${card.id}`,
+        name: card.name,
+        pack: card.type ?? '',
+        rarity: '',
+        imageUrl: card.card_images?.[0]?.image_url ?? '',
+        passcode: String(card.id),
+        cardType: card.type ?? '',
+        cardRace: card.race ?? '',
+        cardAttribute: card.attribute ?? '',
+        archetype: card.archetype ?? name,
+      })
+      if (results.length >= maxResults) return results
+    }
+
+    if (noMore) break
+    offset += YGO_API_PAGE_SIZE
+  }
+
+  return results
+}
+
+/** 種族・カード種別で検索（TCG / カテゴリ検索） */
+export async function searchYgoCardsByFilters(
+  filters,
+  { maxResults = MAX_SEARCH_RESULTS, signal } = {},
+) {
+  const results = []
+  let offset = 0
+
+  while (results.length < maxResults) {
+    const params = new URLSearchParams({
+      num: String(YGO_API_PAGE_SIZE),
+      offset: String(offset),
+      misc: 'yes',
+    })
+    if (filters.type) params.set('type', filters.type)
+    if (filters.race) params.set('race', filters.race)
+    if (filters.attribute) params.set('attribute', filters.attribute)
+    if (filters.level) params.set('level', String(filters.level))
+    if (filters.fname) params.set('fname', String(filters.fname).trim())
+
+    const { data: batch, noMore } = await fetchCardPage(params, signal)
+    if (batch.length === 0) break
+
+    for (const card of batch) {
+      results.push({
+        id: `YGO-${card.id}`,
+        name: card.name,
+        pack: card.type ?? '',
+        rarity: '',
+        imageUrl: card.card_images?.[0]?.image_url ?? '',
+        passcode: String(card.id),
+        cardType: card.type ?? '',
+        cardRace: card.race ?? '',
+        cardAttribute: card.attribute ?? '',
+      })
+      if (results.length >= maxResults) return results
+    }
+
+    if (noMore) break
+    offset += YGO_API_PAGE_SIZE
+  }
+
+  return results
+}
+
 export async function searchYgoCards(query, { maxResults = MAX_SEARCH_RESULTS, signal } = {}) {
   const trimmed = query.trim()
   if (!trimmed) return []

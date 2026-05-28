@@ -14,3 +14,14 @@ export function normalizeForSearch(input) {
     .replace(/[-－ー・/]/g, ' ')
     .replace(/\s+/g, ' ')
 }
+
+/** カード名・英語名・パスコードがクエリを満たすか（正規化・トークン AND） */
+export function matchesTextQuery(card, query) {
+  const q = normalizeForSearch(query)
+  if (!q) return true
+  const tokens = q.split(' ').filter(Boolean)
+  const blob = normalizeForSearch(
+    `${card?.name ?? ''} ${card?.nameEn ?? ''} ${card?.passcode ?? ''}`,
+  )
+  return tokens.every((token) => blob.includes(token))
+}

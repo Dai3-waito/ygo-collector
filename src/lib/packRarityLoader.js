@@ -1,9 +1,31 @@
+import { isOcgMarket } from './cardMarket.js'
 import { dominantSetPrefix, fetchNeuronPackRarityByPid } from './neuronPackApi.js'
-import { fetchRarityMapForSetWithTimeout, lookupProdeckSetMeta } from './prodeckPackApi.js'
+import {
+  fetchRarityMapForSetWithTimeout,
+  lookupProdeckSetMeta,
+} from './prodeckPackApi.js'
+import { englishNameFromNeuronEntry } from './packRarityUtils.js'
 import { resolveCanonicalPackName } from './packTotalsStorage.js'
 
+function resolveSetMetaForPack(pack, packCards, entry, setMetaByPack, prodeckSetList) {
+  const existing = setMetaByPack.get(pack)
+  if (existing?.setCode) return existing
+
+      const fromCards = dominantSetPrefix(packCards, market)
+  let meta = lookupProdeckSetMeta(pack, fromCards, prodeckSetList)
+  if (meta?.setCode) return meta
+
+  const enFromEntry = englishNameFromNeuronEntry(entry?.name)
+  if (enFromEntry) {
+    meta = lookupProdeckSetMeta(enFromEntry, fromCards, prodeckSetList)
+    if (meta?.setCode) return meta
+  }
+
+  return lookupProdeckSetMeta(resolveCanonicalPackName(pack), fromCards, prodeckSetList)
+}
+
 /**
- * パックごとにレアリティ内訳を取得（YGOPRODeck → ニューロン、並列・タイムアウト付き）
+ * 全パックのレアリティ内訳（ニューロン収録を優先、未取得時は YGOPRODeck）
  */
 export async function loadOfficialRarityByPack(
   packKeys,
@@ -11,10 +33,12 @@ export async function loadOfficialRarityByPack(
   entryByPack,
   setMetaByPack,
   prodeckSetList,
+  marketByPack = null,
   signal,
 ) {
   const officialRarityByPack = new Map()
   const raritySourceByPack = new Map()
+  const resolvedMetaByPack = new Map()
 
   await Promise.all(
     packKeys.map(async (pack) => {
@@ -23,29 +47,48 @@ export async function loadOfficialRarityByPack(
       const packCards = cards.filter((c) => resolveCanonicalPackName(c.pack) === pack)
       const entry = entryByPack.get(pack)
       const pid = entry?.pid
+      const market = marketByPack?.get(pack)
 
-      let meta =
-        setMetaByPack.get(pack) ??
-        lookupProdeckSetMeta(pack, dominantSetPrefix(packCards), prodeckSetList)
+      if (isOcgMarket(market) && pid) {
+        try {
+          const neuronCounts = await fetchNeuronPackRarityByPid(pid, signal)
+          if (neuronCounts?.size) {
+            officialRarityByPack.set(pack, neuronCounts)
+            raritySourceByPack.set(pack, 'neuron')
+            return
+          }
+        } catch (error) {
+          if (error.name === 'AbortError') throw error
+        }
+      }
 
-      const [prodeckCounts, neuronCounts] = await Promise.all([
-        meta?.setCode
-          ? fetchRarityMapForSetWithTimeout(meta.setCode, meta.setName, signal)
-          : Promise.resolve(null),
-        pid ? fetchNeuronPackRarityByPid(pid, signal).catch(() => null) : Promise.resolve(null),
-      ])
+      const meta = resolveSetMetaForPack(
+        pack,
+        packCards,
+        entry,
+        setMetaByPack,
+        prodeckSetList,
+      )
 
-      if (signal?.aborted) return
+      if (!meta?.setCode) return
 
-      if (prodeckCounts?.size) {
-        officialRarityByPack.set(pack, prodeckCounts)
+      resolvedMetaByPack.set(pack, meta)
+
+      try {
+        const counts = await fetchRarityMapForSetWithTimeout(
+          meta.setCode,
+          meta.setName,
+          signal,
+          15_000,
+        )
+        if (!counts?.size) return
+        officialRarityByPack.set(pack, counts)
         raritySourceByPack.set(pack, 'prodeck')
-      } else if (neuronCounts?.size) {
-        officialRarityByPack.set(pack, neuronCounts)
-        raritySourceByPack.set(pack, 'neuron')
+      } catch (error) {
+        if (error.name === 'AbortError') throw error
       }
     }),
   )
 
-  return { officialRarityByPack, raritySourceByPack }
+  return { officialRarityByPack, raritySourceByPack, resolvedMetaByPack }
 }

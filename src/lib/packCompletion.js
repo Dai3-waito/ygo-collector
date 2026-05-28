@@ -1,4 +1,6 @@
+import { marketLabel, resolvePackMarket } from './cardMarket.js'
 import { resolveOfficialTotal } from './packOfficialApi.js'
+import { countUniqueCardKinds } from './packRarityUtils.js'
 import { resolveCanonicalPackName } from './packTotalsStorage.js'
 
 /**
@@ -17,8 +19,8 @@ export function computePackCompletionList(cards, officialData) {
   if (!officialData) {
     return [...byPack.entries()].map(([pack, packCards]) => ({
       pack,
-      ownedKinds: packCards.filter((c) => (c.owned ?? 0) > 0).length,
-      registeredKinds: packCards.length,
+      ownedKinds: countUniqueCardKinds(packCards, { ownedOnly: true }),
+      registeredKinds: countUniqueCardKinds(packCards, { ownedOnly: false }),
       officialTotal: null,
       rate: null,
       usesOfficialDenominator: false,
@@ -26,13 +28,17 @@ export function computePackCompletionList(cards, officialData) {
       sourceLabel: null,
       neuronUrl: null,
       neuronPid: null,
+      market: resolvePackMarket(pack, packCards),
+      marketLabel: marketLabel(resolvePackMarket(pack, packCards)),
     }))
   }
 
   return [...byPack.entries()]
     .map(([pack, packCards]) => {
-      const ownedKinds = packCards.filter((c) => (c.owned ?? 0) > 0).length
-      const registeredKinds = packCards.length
+      const ownedKinds = countUniqueCardKinds(packCards, { ownedOnly: true })
+      const registeredKinds = countUniqueCardKinds(packCards, { ownedOnly: false })
+      const market =
+        officialData.marketByPack?.get(pack) ?? resolvePackMarket(pack, packCards)
       const resolved = resolveOfficialTotal(pack, packCards, officialData)
 
       const useOfficial = resolved.total != null && resolved.total > 0
@@ -51,6 +57,8 @@ export function computePackCompletionList(cards, officialData) {
         sourceLabel: resolved.sourceLabel,
         neuronUrl: resolved.neuronUrl,
         neuronPid: resolved.pid,
+        market,
+        marketLabel: marketLabel(market),
       }
     })
     .sort((a, b) => {

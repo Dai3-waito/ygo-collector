@@ -23,6 +23,7 @@ export default function PackCompletionPanel({
         officialData?.officialRarityByPack,
         officialData?.setMetaByPack,
         officialData?.raritySourceByPack,
+        officialData,
       ),
     [cards, officialData],
   )
@@ -92,7 +93,7 @@ function PackView({ packCompletionList, resolvedCount, isLoadingOfficial }) {
   return (
     <>
       <p className="mb-4 text-xs text-zinc-500">
-        遊戯王ニューロン「収録」の総種類数を基準に計算します。
+        パック内の型番から OCG（-JP）/ TCG（-EN）を判別します。OCG はニューロン収録優先、TCG は YGOPRODeck を基準にします。
         {!isLoadingOfficial && packCompletionList.length > 0
           ? `（${resolvedCount} / ${packCompletionList.length} パック取得済み）`
           : ''}
@@ -131,10 +132,10 @@ function RarityView({ rarityByPackList, isLoadingOfficial, rarityOfficialCount }
   return (
     <>
       <p className="mb-4 text-xs text-zinc-500">
-        パックをタップして開くと、収録されている全レアリティの所持率を表示します。分母は
-        YGOPRODeck を優先し、取得できない場合は遊戯王ニューロン「収録」から補います。
+        N・R・SR・UR・SE・UL・PSE など全レアリティの公式枚数と所持率を表示します。
+        OCG パックはニューロン収録を優先、TCG パックは YGOPRODeck のみ参照します。所持は型番（カード種）単位です。
         {!isLoadingOfficial && rarityByPackList.length > 0
-          ? `（公式内訳 ${rarityOfficialCount} / ${rarityByPackList.length} パック）`
+          ? `（内訳取得 ${rarityOfficialCount} / ${rarityByPackList.length} パック）`
           : ''}
       </p>
       {isLoadingOfficial ? (
@@ -156,7 +157,7 @@ function RarityView({ rarityByPackList, isLoadingOfficial, rarityOfficialCount }
       )}
       {!isLoadingOfficial && rarityByPackList.some((p) => !p.hasOfficialBreakdown) ? (
         <p className="mt-4 text-[10px] text-zinc-600">
-          ※ 型番が無いカードのみ、登録済みレアリティを分母にしています
+          ※ ニューロンに収録が無い、または照合できないパックは YGOPRODeck または登録済みレアリティのみ表示します
         </p>
       ) : null}
     </>
@@ -172,12 +173,20 @@ function PackCompletionCard({ item }) {
     usesOfficialDenominator,
     sourceLabel,
     neuronUrl,
+    marketLabel: packMarketLabel,
   } = item
 
   return (
     <div className="rounded-xl border border-zinc-700/80 bg-zinc-950/50 p-3">
       <div className="mb-2 flex items-start justify-between gap-2">
-        <p className="text-sm font-medium leading-snug text-zinc-100">{pack}</p>
+        <div className="min-w-0">
+          <p className="text-sm font-medium leading-snug text-zinc-100">{pack}</p>
+          {packMarketLabel ? (
+            <span className="mt-0.5 inline-block rounded border border-zinc-600/80 px-1.5 py-0.5 text-[9px] text-zinc-400">
+              {packMarketLabel}
+            </span>
+          ) : null}
+        </div>
         <p className="shrink-0 text-lg font-bold tabular-nums text-amber-200">
           {rate != null ? `${rate}%` : '—'}
         </p>
@@ -210,17 +219,21 @@ function PackCompletionCard({ item }) {
 }
 
 function BinderPackRarityAccordion({ packItem, isOpen, onToggle }) {
-  const { pack, setPrefix, rarities, hasOfficialBreakdown, source } = packItem
+  const {
+    pack,
+    setPrefix,
+    rarities,
+    hasOfficialBreakdown,
+    source,
+    packOwnedKinds,
+    packOfficialTotal,
+    packRate,
+  } = packItem
   const sourceLabel =
-    source === 'prodeck' ? 'YGOPRODeck' : source === 'neuron' ? 'ニューロン' : null
-  const ownedTotal = rarities.reduce((sum, r) => sum + r.owned, 0)
-  const officialTotal = hasOfficialBreakdown
-    ? rarities.reduce((sum, r) => sum + (r.official ?? 0), 0)
-    : null
-  const avgRate =
-    rarities.length > 0
-      ? Math.round(rarities.reduce((sum, r) => sum + r.rate, 0) / rarities.length)
-      : 0
+    source === 'neuron' ? 'ニューロン' : source === 'prodeck' ? 'YGOPRODeck' : null
+  const ownedTotal = packOwnedKinds ?? rarities.reduce((sum, r) => sum + r.owned, 0)
+  const officialTotal = packOfficialTotal ?? null
+  const headerRate = packRate
 
   return (
     <div
@@ -250,19 +263,14 @@ function BinderPackRarityAccordion({ packItem, isOpen, onToggle }) {
             ›
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-[10px] uppercase tracking-widest text-amber-600/90">Pack</p>
+            <p className="text-[10px] uppercase tracking-widest text-amber-500/90">Rarity</p>
             <h3 className="text-base font-semibold leading-snug text-amber-50">{pack}</h3>
             {!isOpen ? (
               <p className="mt-1 text-[11px] text-zinc-500">
-                {rarities.length} レアリティ
-                {sourceLabel ? ` · ${sourceLabel}` : ''}
-                {hasOfficialBreakdown && officialTotal != null
-                  ? ` · 所持 ${ownedTotal} / 公式 ${officialTotal} 種`
-                  : ownedTotal > 0
-                    ? ` · 所持 ${ownedTotal} 種`
-                    : ''}
-                {' · 平均 '}
-                {avgRate}%
+                {hasOfficialBreakdown ? `${rarities.length} レアリティ · ` : ''}
+                所持 {ownedTotal} 種
+                {officialTotal != null ? ` / 公式 ${officialTotal} 種` : ''}
+                {sourceLabel ? `（${sourceLabel}）` : ''}
               </p>
             ) : null}
           </div>
@@ -273,33 +281,70 @@ function BinderPackRarityAccordion({ packItem, isOpen, onToggle }) {
               </span>
             ) : null}
             {!isOpen ? (
-              <p className="text-lg font-bold tabular-nums text-amber-200/90">{avgRate}%</p>
+              <p className="text-lg font-bold tabular-nums text-amber-200">
+                {headerRate != null ? `${headerRate}%` : '—'}
+              </p>
             ) : null}
           </div>
         </button>
 
         {isOpen ? (
-          <div className="space-y-4 border-t border-amber-800/30 pb-4 pt-3">
-            {rarities.map((r) => (
-              <div key={r.rarity}>
-                <div className="mb-1.5 flex items-end justify-between gap-2">
-                  <p className="text-sm font-medium text-zinc-200">{r.rarity}</p>
-                  <p className="text-xl font-bold tabular-nums text-amber-200">{r.rate}%</p>
+          <div className="border-t border-amber-800/30 pb-4 pt-3">
+            {hasOfficialBreakdown && officialTotal != null ? (
+              <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-amber-500/25 bg-amber-400/10 px-3 py-2.5">
+                <div>
+                  <p className="text-[10px] text-amber-300/80">パック合計（パック別と同じ）</p>
+                  <p className="text-sm text-zinc-200">
+                    所持 <span className="font-semibold text-amber-100">{ownedTotal}</span> 種
+                    <span className="text-zinc-500"> / 公式 </span>
+                    <span className="font-semibold text-amber-100">{officialTotal}</span> 種
+                  </p>
                 </div>
-                <RarityProgressBar percent={r.rate} rarity={r.rarity} />
-                <p className="mt-1 text-[10px] text-zinc-500">
-                  所持 {r.owned}
-                  {r.usesOfficial ? (
-                    <> / 公式 {r.official} 種</>
-                  ) : (
-                    <> / 登録 {r.registered} 種</>
-                  )}
-                  {!hasOfficialBreakdown && r.registered > 0 ? (
-                    <span className="text-zinc-600">（参考）</span>
-                  ) : null}
+                <p className="text-2xl font-bold tabular-nums text-amber-200">
+                  {headerRate != null ? `${headerRate}%` : '—'}
                 </p>
               </div>
-            ))}
+            ) : null}
+
+            <div className="space-y-4">
+              {rarities.map((r) => (
+                <div
+                  key={r.rarity}
+                  className="rounded-xl border border-zinc-800/80 bg-zinc-950/40 px-3 py-2.5"
+                >
+                  <div className="mb-1.5 flex items-end justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-mono text-lg font-bold tracking-wide text-amber-100">
+                        {r.rarity}
+                      </p>
+                      {r.rarityName ? (
+                        <p className="truncate text-[10px] text-zinc-500">{r.rarityName}</p>
+                      ) : null}
+                    </div>
+                    <p className="text-xl font-bold tabular-nums text-amber-200">{r.rate}%</p>
+                  </div>
+                  <RarityProgressBar
+                    percent={r.rate}
+                    rarity={r.rarityName ?? r.rarity}
+                    className="h-3.5"
+                  />
+                  <p className="mt-1.5 text-[11px] text-zinc-400">
+                    所持 <span className="font-medium text-zinc-200">{r.owned}</span> 種
+                    {r.usesOfficial ? (
+                      <>
+                        <span className="text-zinc-600"> / 公式 </span>
+                        <span className="font-medium text-zinc-200">{r.official}</span> 種
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-zinc-600"> / 登録 </span>
+                        <span className="font-medium text-zinc-200">{r.registered}</span> 種
+                      </>
+                    )}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
       </div>

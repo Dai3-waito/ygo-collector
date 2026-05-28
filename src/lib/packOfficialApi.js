@@ -1,6 +1,11 @@
 import { packTotals as fallbackPackTotals } from '../data/packTotals.js'
 import { packCatalog } from '../data/packCatalog.js'
 import {
+  isOcgMarket,
+  marketLabel,
+  resolvePackMarket,
+} from './cardMarket.js'
+import {
   dominantSetPrefix,
   fetchNeuronPackList,
   fetchNeuronPackTotals,
@@ -16,6 +21,7 @@ import {
   lookupProdeckSetMeta,
 } from './prodeckPackApi.js'
 import { loadOfficialRarityByPack } from './packRarityLoader.js'
+import { sumRarityCountMap } from './packRarityUtils.js'
 import { resolveCanonicalPackName } from './packTotalsStorage.js'
 
 /** 収録一覧ページ（キーワード検索ではない） */
@@ -36,10 +42,37 @@ function fallbackTotal(packName) {
   return null
 }
 
-function packOfficialUrl(packName, entry, pid, officialData) {
+function packOfficialUrl(packName, packCards, entry, pid, officialData, market = null) {
   if (entry?.url) return entry.url
 
-  const resolvedPid = pid ?? entry?.pid
+  const m =
+    market ??
+    officialData?.marketByPack?.get(resolveCanonicalPackName(packName)) ??
+    resolvePackMarket(packName, packCards)
+
+  let resolvedPid = pid ?? entry?.pid
+  let resolvedUrl = entry?.url
+
+  if (
+    isOcgMarket(m) &&
+    !resolvedPid &&
+    packCards?.length &&
+    officialData?.neuronList?.length
+  ) {
+    const retry = resolveNeuronEntry(
+      packName,
+      packCards,
+      officialData.neuronList,
+      officialData.prodeckSetList,
+    )
+    if (retry?.pid) {
+      resolvedPid = retry.pid
+      resolvedUrl = retry.url
+    }
+  }
+
+  if (resolvedUrl) return resolvedUrl
+
   if (resolvedPid) {
     const fromList = officialData?.neuronList?.find((p) => p.pid === resolvedPid)
     if (fromList?.url) return fromList.url
@@ -48,6 +81,7 @@ function packOfficialUrl(packName, entry, pid, officialData) {
     return neuronPackPageUrl(resolvedPid)
   }
 
+  if (!isOcgMarket(m)) return null
   return NEURON_SHUROKU_LIST_URL
 }
 
@@ -65,14 +99,28 @@ export async function loadOfficialPackData(cards, signal) {
   const packKeys = [...new Set(cards.map((c) => resolveCanonicalPackName(c.pack)).filter(Boolean))]
   const entryByPack = new Map()
   const setMetaByPack = new Map()
+  const marketByPack = new Map()
 
   for (const pack of packKeys) {
     const packCards = cards.filter((c) => resolveCanonicalPackName(c.pack) === pack)
-    const entry = resolveNeuronEntry(pack, packCards, neuronList)
-    if (entry) entryByPack.set(pack, entry)
-    const fromCards = dominantSetPrefix(packCards)
+    const market = resolvePackMarket(pack, packCards)
+    marketByPack.set(pack, market)
+
+    const fromCards = dominantSetPrefix(packCards, market)
     const meta = lookupProdeckSetMeta(pack, fromCards, prodeckSetList)
     if (meta) setMetaByPack.set(pack, meta)
+
+    if (isOcgMarket(market)) {
+      const entry = resolveNeuronEntry(pack, packCards, neuronList, prodeckSetList)
+      if (entry) entryByPack.set(pack, entry)
+    }
+  }
+
+  for (const pack of packKeys) {
+    if (entryByPack.has(pack) || !isOcgMarket(marketByPack.get(pack))) continue
+    const packCards = cards.filter((c) => resolveCanonicalPackName(c.pack) === pack)
+    const entry = resolveNeuronEntry(pack, packCards, neuronList, prodeckSetList)
+    if (entry) entryByPack.set(pack, entry)
   }
 
   const prefixes = [...new Set([...setMetaByPack.values()].map((m) => m.setCode))]
@@ -93,6 +141,7 @@ export async function loadOfficialPackData(cards, signal) {
       entryByPack,
       setMetaByPack,
       prodeckSetList,
+      marketByPack,
       signal,
     ).catch((e) => {
       if (e.name !== 'AbortError') errors.push(e.message)
@@ -100,15 +149,21 @@ export async function loadOfficialPackData(cards, signal) {
     }),
   ])
 
-  const { officialRarityByPack, raritySourceByPack } = rarityResult
+  const { officialRarityByPack, raritySourceByPack, resolvedMetaByPack } = rarityResult
+
+  for (const [pack, meta] of resolvedMetaByPack) {
+    if (meta?.setCode) setMetaByPack.set(pack, meta)
+  }
 
   return {
     neuronList,
     neuronTotals,
     prodeckIndex,
     prodeckSetInfo,
+    prodeckSetList,
     entryByPack,
     setMetaByPack,
+    marketByPack,
     officialRarityByPack,
     raritySourceByPack,
     errors,
@@ -117,21 +172,62 @@ export async function loadOfficialPackData(cards, signal) {
 
 export function resolveOfficialTotal(packName, packCards, officialData) {
   const canonical = resolveCanonicalPackName(packName)
+  const market =
+    officialData?.marketByPack?.get(canonical) ?? resolvePackMarket(packName, packCards)
+
   const entry =
     officialData?.entryByPack?.get(canonical) ??
-    resolveNeuronEntry(packName, packCards, officialData?.neuronList)
+    (isOcgMarket(market)
+      ? resolveNeuronEntry(
+          packName,
+          packCards,
+          officialData?.neuronList,
+          officialData?.prodeckSetList,
+        )
+      : null)
   const pid = entry?.pid ?? null
-  const neuronUrl = packOfficialUrl(packName, entry, pid, officialData)
-  const setPrefix = dominantSetPrefix(packCards)
+  const neuronUrl = packOfficialUrl(packName, packCards, entry, pid, officialData, market)
+  const setPrefix = dominantSetPrefix(packCards, market)
 
-  if (pid && officialData?.neuronTotals?.has(pid)) {
+  const raritySrc = officialData?.raritySourceByPack?.get(canonical)
+  const fromNeuronRarity = raritySrc === 'neuron'
+
+  if (
+    isOcgMarket(market) &&
+    fromNeuronRarity &&
+    pid &&
+    officialData?.neuronTotals?.has(pid)
+  ) {
     const { total, url } = officialData.neuronTotals.get(pid)
     return {
       total,
       source: 'neuron',
       pid,
       neuronUrl: entry?.url || url || neuronUrl,
-      sourceLabel: 'ニューロン（収録）',
+      sourceLabel: `ニューロン（収録・${marketLabel(market)}）`,
+    }
+  }
+
+  const rarityMap = officialData?.officialRarityByPack?.get(canonical)
+  const raritySum = sumRarityCountMap(rarityMap)
+  if (raritySum > 0) {
+    return {
+      total: raritySum,
+      source: 'prodeck-rarity',
+      pid,
+      neuronUrl,
+      sourceLabel: `YGOPRODeck（レアリティ合計・${marketLabel(market)}）`,
+    }
+  }
+
+  if (isOcgMarket(market) && pid && officialData?.neuronTotals?.has(pid)) {
+    const { total, url } = officialData.neuronTotals.get(pid)
+    return {
+      total,
+      source: 'neuron',
+      pid,
+      neuronUrl: entry?.url || url || neuronUrl,
+      sourceLabel: `ニューロン（収録・${marketLabel(market)}）`,
     }
   }
 

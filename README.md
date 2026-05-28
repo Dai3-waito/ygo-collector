@@ -138,8 +138,8 @@ alter table user_cards add column if not exists folder text default '';
 ## パック別コンプ率
 
 - ヘッダーの **「コレクション率」** タブで表示（一覧タブとは分離）
-- 公式の総種類数は **遊戯王ニューロン「収録」の「全○○枚」** を最優先（`/api/ygo-neuron-list`・`/api/ygo-neuron-pack`）
-- レアリティ別の分母は **YGOPRODeck**（`/api/ygo-set-rarities`）を優先し、取得できないパックは **ニューロン収録**（`/api/ygo-neuron-pack-rarities`）で全レアリティを補完
+- 公式の総種類数は **ニューロン「収録」の「全○○枚」**（`/api/ygo-neuron-pack`）。レアリティ行の分母は収録ページのカード種×レアリティ（`t_rid_*`）で集計（印刷枠の重複カウントはしない）
+- レアリティ別の分母は **ニューロン収録**（`/api/ygo-neuron-pack-rarities`）を優先し、取得できないパックは **YGOPRODeck**（`/api/ygo-set-rarities`）で補完
 - 取得できない場合は **YGOPRODeck**（セット名・型番 `LEDE` 等）と `packTotals.js` 参考値で補完
 - 「公式でこのパックを確認」は収録ページ（`ope=1&pid=...`）へ直接リンク
 - パック名のゆれは `src/data/packCatalog.js` で照合

@@ -227,7 +227,7 @@ export function lookupProdeckSetMeta(packName, preferredPrefix, setList) {
     }
   }
 
-  if (bestScore < 75 || !best) return null
+  if (bestScore < 68 || !best) return null
   return { setCode: best.set_code, setName: best.set_name }
 }
 
@@ -256,7 +256,7 @@ export function countRaritiesFromSetInfo(rows) {
   return counts
 }
 
-const SETINFO_RARITY_CACHE = 'ygo-prodeck-setinfo-rarity-v3'
+const SETINFO_RARITY_CACHE = 'ygo-prodeck-setinfo-rarity-v4'
 const PRODECK_RARITY_TIMEOUT_MS = 8_000
 
 function readRarityCache() {

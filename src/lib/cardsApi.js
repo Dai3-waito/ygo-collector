@@ -1,4 +1,5 @@
 import { cards as masterCards } from '../data/cards.js'
+import { setCodeFromCollectionId } from './collectionCardId.js'
 import { getCardFolder, isFolderColumnError, setCardFolder } from './cardFoldersLocal.js'
 import { DEFAULT_FOLDER } from './foldersStorage.js'
 import { supabase } from './supabase.js'
@@ -10,12 +11,16 @@ export function rowToCard(row, userId) {
     (userId ? getCardFolder(userId, row.card_id) : null) ||
     DEFAULT_FOLDER
 
+  const passcode = row.passcode?.trim() || null
+
   return {
     id: row.card_id,
+    setCode: setCodeFromCollectionId(row.card_id),
     name: row.name ?? row.card_id,
     pack: row.pack ?? '',
     rarity: row.rarity ?? '',
-    imageUrl: row.image_url || `/cards/${row.card_id}.jpg`,
+    imageUrl: row.image_url || '',
+    passcode,
     owned: row.owned ?? 0,
     location: row.location ?? '',
     collectionType: row.collection_type ?? '',
@@ -31,6 +36,7 @@ export function cardToRow(card, userId, { includeFolder = true } = {}) {
     pack: card.pack,
     rarity: card.rarity,
     image_url: card.imageUrl,
+    passcode: card.passcode ?? null,
     owned: card.owned,
     location: card.location,
     collection_type: card.collectionType,
@@ -49,7 +55,20 @@ export async function fetchUserCards(userId) {
     .eq('user_id', userId)
     .order('card_id')
 
-  if (error) throw error
+  if (error) {
+    if (/passcode/i.test(error.message ?? '')) {
+      const { data: legacy, error: legacyError } = await supabase
+        .from('user_cards')
+        .select(
+          'card_id, name, pack, rarity, image_url, owned, location, collection_type, folder, user_id, updated_at',
+        )
+        .eq('user_id', userId)
+        .order('card_id')
+      if (legacyError) throw legacyError
+      return (legacy ?? []).map((row) => rowToCard(row, userId))
+    }
+    throw error
+  }
   return (data ?? []).map((row) => rowToCard(row, userId))
 }
 
@@ -62,22 +81,32 @@ export async function seedUserCards(userId) {
 
 export async function upsertUserCard(card, userId) {
   const folder = card.folder?.trim() || DEFAULT_FOLDER
-  let { error } = await supabase.from('user_cards').upsert(cardToRow(card, userId), {
+  let row = cardToRow(card, userId)
+  let folderLocalOnly = false
+
+  let { error } = await supabase.from('user_cards').upsert(row, {
     onConflict: 'user_id,card_id',
   })
 
   if (error && isFolderColumnError(error)) {
     setCardFolder(userId, card.id, folder)
-    ;({ error } = await supabase.from('user_cards').upsert(cardToRow(card, userId, { includeFolder: false }), {
+    folderLocalOnly = true
+    row = cardToRow(card, userId, { includeFolder: false })
+    ;({ error } = await supabase.from('user_cards').upsert(row, {
       onConflict: 'user_id,card_id',
     }))
-    if (error) throw error
-    return { folderLocalOnly: true }
+  }
+
+  if (error && /passcode/i.test(error.message ?? '')) {
+    delete row.passcode
+    ;({ error } = await supabase.from('user_cards').upsert(row, {
+      onConflict: 'user_id,card_id',
+    }))
   }
 
   if (error) throw error
-  setCardFolder(userId, card.id, folder)
-  return {}
+  if (!folderLocalOnly) setCardFolder(userId, card.id, folder)
+  return folderLocalOnly ? { folderLocalOnly: true } : {}
 }
 
 export async function deleteUserCard(userId, cardId) {

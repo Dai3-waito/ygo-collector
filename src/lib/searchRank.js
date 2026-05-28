@@ -1,3 +1,8 @@
+import {
+  cardTypesMatchIntent,
+  categoryMatchScore,
+  resolveCategoryIntent,
+} from './cardCategory.js'
 import { normalizeForSearch } from './searchUtils.js'
 
 /** 検索結果の名前フィールドに正規化して格納 */
@@ -56,6 +61,8 @@ export function scoreSearchItem(item, query) {
   if (allInName) score += 150
   if (!anyInName) score -= 120
 
+  score += categoryMatchScore(item.text?.types, raw)
+
   return score
 }
 
@@ -75,6 +82,7 @@ export function isStrongNameMatch(item, query) {
  * パスワード重複を除き、関連度順に並べ替え
  */
 export function rankSearchResults(items, query) {
+  const categoryIntent = resolveCategoryIntent(query)
   const byPasscode = new Map()
 
   for (const item of items) {
@@ -92,11 +100,18 @@ export function rankSearchResults(items, query) {
   const qNorm = normalizeForSearch(query)
   const hasStrong = ranked.some((item) => isStrongNameMatch(item, query))
 
-  const filtered = ranked.filter((item, index) => {
+  let filtered = ranked.filter((item, index) => {
     if (index < 30) return true
     if (!hasStrong) return item._score >= 40
     return item._score >= 70 || isStrongNameMatch(item, query)
   })
+
+  if (categoryIntent) {
+    const typeMatches = filtered.filter((item) =>
+      cardTypesMatchIntent(item.text?.types, categoryIntent),
+    )
+    if (typeMatches.length > 0) filtered = typeMatches
+  }
 
   return filtered
 }

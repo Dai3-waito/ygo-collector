@@ -1,3 +1,11 @@
+import {
+  filterPrintsForMarket,
+  isOcgMarket,
+  marketFromImageLang,
+  printsFromSetCodes,
+} from './cardMarket.js'
+import { fetchNeuronCardPrints, resolveNeuronCid } from './neuronCardApi.js'
+
 const PRINTS_API = '/api/ygo-prints'
 
 function isJpSetCode(setCode) {
@@ -35,8 +43,46 @@ export function parseCardPrints(apiCard) {
   return prints
 }
 
-export async function fetchCardPrints(passcode, signal) {
-  const res = await fetch(`${PRINTS_API}?id=${encodeURIComponent(passcode)}`, { signal })
+function mergePrintLists(...lists) {
+  const merged = []
+  const seen = new Set()
+  for (const list of lists) {
+    for (const p of list ?? []) {
+      const key = `${p.setCode}|${p.rarity}`
+      if (!p.setCode || seen.has(key)) continue
+      seen.add(key)
+      merged.push(p)
+    }
+  }
+  return merged
+}
+
+export async function fetchCardPrints(passcode, signal, market = null, options = {}) {
+  const m = market ?? marketFromImageLang('jp')
+  const fromSearch = printsFromSetCodes(options.setCodesFromSearch, m)
+
+  if (isOcgMarket(m)) {
+    const cid =
+      options.neuronCid != null
+        ? String(options.neuronCid)
+        : await resolveNeuronCid(passcode, signal)
+    const fromNeuron = cid ? await fetchNeuronCardPrints(cid, signal) : []
+
+    if (fromNeuron.length > 0) {
+      return mergePrintLists(fromSearch, fromNeuron).sort((a, b) =>
+        a.setCode.localeCompare(b.setCode),
+      )
+    }
+  }
+
+  let res
+  try {
+    res = await fetch(`${PRINTS_API}?id=${encodeURIComponent(passcode)}`, { signal })
+  } catch (error) {
+    if (error.name === 'AbortError') throw error
+    return fromSearch
+  }
+
   let body = {}
   try {
     body = await res.json()
@@ -46,12 +92,15 @@ export async function fetchCardPrints(passcode, signal) {
 
   if (!res.ok) {
     if (res.status === 400 && body.error?.includes?.('No card')) {
-      return []
+      return fromSearch
     }
+    if (fromSearch.length > 0) return fromSearch
     throw new Error(body.error || 'レアリティ情報の取得に失敗しました')
   }
 
   const card = body.data?.[0]
-  if (!card) return []
-  return parseCardPrints(card)
+  if (!card) return fromSearch
+
+  const fromProdeck = filterPrintsForMarket(parseCardPrints(card), m)
+  return mergePrintLists(fromSearch, fromProdeck)
 }

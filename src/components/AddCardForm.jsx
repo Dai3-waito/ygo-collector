@@ -1,14 +1,29 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   MAX_COLLECTION_SIZE,
   MIN_SEARCH_LENGTH,
   SEARCH_DISPLAY_LIMIT,
 } from '../lib/constants.js'
 import { DEFAULT_FOLDER } from '../lib/foldersStorage.js'
+import {
+  isOcgMarket,
+  marketFromImageLang,
+  marketLabel,
+  normalizeSetCodeForMarket,
+} from '../lib/cardMarket.js'
 import { detectImageLangFromQuery, IMAGE_LANG_OPTIONS } from '../lib/imageLang.js'
 import { fetchCardPrints } from '../lib/ygoPrints.js'
 import { cardImageUrl, lookupCdbBySetCode } from '../lib/ygoCdb.js'
 import { searchCardsReliable } from '../lib/cardSearch.js'
+import { enrichOneCatalogItem, needsYgocdbEnrich } from '../lib/ygoCdb.js'
+import { CardArtWatermarkOverlay } from '../lib/cardUi.jsx'
+import {
+  describeCategoryFilters,
+  EMPTY_CATEGORY_FILTERS,
+  hasActiveCategoryFilters,
+} from '../lib/cardCategory.js'
+import CardSearchAdvanced from './CardSearchAdvanced.jsx'
+import { collectionCardId, findCollectionMatch } from '../lib/collectionCardId.js'
 import { resolveCanonicalPackName } from '../lib/packTotalsStorage.js'
 
 function printKey(print) {
@@ -19,27 +34,17 @@ function resultKey(entry) {
   return `${entry.passcode}-${entry.cid ?? ''}`
 }
 
-function imageKeyForEntry(entry, printCdbEntry) {
-  if (
-    printCdbEntry &&
-    String(printCdbEntry.passcode) === String(entry?.passcode) &&
-    printCdbEntry.cid
-  ) {
-    return printCdbEntry.cid
-  }
-  return entry?.cid ?? entry?.passcode
-}
-
 function buildCardFromSelection(entry, print, folder, imageLang, printCdbEntry) {
-  const cardId = print?.setCode ?? entry.passcode
-  const imageKey = imageKeyForEntry(entry, printCdbEntry)
+  const setCode = print?.setCode ?? entry.passcode
+  const rarity = print?.rarity ?? ''
   const packRaw = print?.setName ?? entry.pack
   return {
-    id: cardId,
+    id: collectionCardId(setCode, rarity),
+    setCode,
     name: entry.name,
     pack: resolveCanonicalPackName(packRaw) || packRaw,
-    rarity: print?.rarity ?? '',
-    imageUrl: cardImageUrl(imageKey, { lang: imageLang, size: 'full' }),
+    rarity,
+    imageUrl: cardImageUrl(entry.passcode, { lang: imageLang, size: 'full' }),
     imageFallback: cardImageUrl(entry.passcode, { lang: 'ygopro', size: 'full' }),
     owned: 1,
     location: '',
@@ -54,6 +59,7 @@ export default function AddCardForm({
   folders,
   collectionCount,
   onAdd,
+  onClose,
   isSaving,
 }) {
   const [search, setSearch] = useState('')
@@ -70,9 +76,13 @@ export default function AddCardForm({
   const [isSearching, setIsSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
   const [printCdbEntry, setPrintCdbEntry] = useState(null)
+  const [setCodesFromSearch, setSetCodesFromSearch] = useState([])
+  const printsFetchGen = useRef(0)
+  const [showAdvancedSearch, setShowAdvancedSearch] = useState(false)
+  const [advFilters, setAdvFilters] = useState(() => ({ ...EMPTY_CATEGORY_FILTERS }))
 
-  const ownedIds = useMemo(() => new Set(ownedCards.map((c) => c.id)), [ownedCards])
   const atCollectionLimit = collectionCount >= MAX_COLLECTION_SIZE
+  const hasAdvFilters = hasActiveCategoryFilters(advFilters)
 
   const selectedEntry = results.find((r) => resultKey(r) === selectedResultKey)
   const selectedPrint = prints.find((p) => printKey(p) === selectedPrintKey)
@@ -86,6 +96,10 @@ export default function AddCardForm({
         null,
       )
     : null
+
+  const mergeTarget = previewCard ? findCollectionMatch(ownedCards, previewCard) : null
+
+  const searchMarket = marketFromImageLang(imageLang)
 
   const previewImageSrc =
     selectedEntry?.imageUrl ??
@@ -108,7 +122,8 @@ export default function AddCardForm({
 
   useEffect(() => {
     const q = search.trim()
-    if (q.length < MIN_SEARCH_LENGTH) {
+    const canSearch = q.length >= MIN_SEARCH_LENGTH || hasAdvFilters
+    if (!canSearch) {
       setResults([])
       setSearchError('')
       setIsSearching(false)
@@ -124,10 +139,15 @@ export default function AddCardForm({
           maxResults: SEARCH_DISPLAY_LIMIT,
           signal: controller.signal,
           imageLang,
+          categoryFilters: advFilters,
         })
         setResults(found)
         if (found.length === 0) {
-          setSearchError('該当するカードが見つかりませんでした。別のキーワードで試してください。')
+          setSearchError(
+            hasAdvFilters
+              ? '条件に合うカードが見つかりませんでした。条件を変えて試してください。'
+              : '該当するカードが見つかりませんでした。別のキーワードで試してください。',
+          )
         }
       } catch (error) {
         if (error.name === 'AbortError') return
@@ -142,35 +162,46 @@ export default function AddCardForm({
       clearTimeout(timer)
       controller.abort()
     }
-  }, [search, imageLang])
+  }, [search, imageLang, advFilters, hasAdvFilters])
 
   useEffect(() => {
     if (!selectedPasscode) {
       setPrints([])
       setSelectedPrintKey('')
       setPrintCdbEntry(null)
+      setSetCodesFromSearch([])
+      setLoadingPrints(false)
       return
     }
 
     const controller = new AbortController()
+    const gen = ++printsFetchGen.current
     setLoadingPrints(true)
-    fetchCardPrints(selectedPasscode, controller.signal)
+
+    fetchCardPrints(selectedPasscode, controller.signal, searchMarket, {
+      setCodesFromSearch,
+      neuronCid: selectedEntry?.cid,
+    })
       .then((list) => {
+        if (gen !== printsFetchGen.current) return
         setPrints(list)
         if (list.length > 0) setSelectedPrintKey(printKey(list[0]))
         else setSelectedPrintKey('')
       })
       .catch((error) => {
-        if (error.name === 'AbortError') return
+        if (error.name === 'AbortError' || gen !== printsFetchGen.current) return
         setPrints([])
         setSelectedPrintKey('')
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoadingPrints(false)
+        if (gen === printsFetchGen.current) setLoadingPrints(false)
       })
 
-    return () => controller.abort()
-  }, [selectedPasscode])
+    return () => {
+      controller.abort()
+      printsFetchGen.current += 1
+    }
+  }, [selectedPasscode, searchMarket, selectedResultKey, setCodesFromSearch, selectedEntry?.cid])
 
   useEffect(() => {
     const setCode = selectedPrint?.setCode
@@ -180,7 +211,10 @@ export default function AddCardForm({
     }
 
     const controller = new AbortController()
-    lookupCdbBySetCode(setCode, { signal: controller.signal, imageLang })
+    lookupCdbBySetCode(normalizeSetCodeForMarket(setCode, searchMarket), {
+      signal: controller.signal,
+      imageLang,
+    })
       .then((entry) => {
         if (!controller.signal.aborted) setPrintCdbEntry(entry)
       })
@@ -190,14 +224,26 @@ export default function AddCardForm({
       })
 
     return () => controller.abort()
-  }, [selectedPrintKey, selectedPrint?.setCode, imageLang])
+  }, [selectedPrintKey, selectedPrint?.setCode, imageLang, searchMarket])
 
-  function handleSelect(card) {
+  async function handleSelect(card) {
     setSelectedResultKey(resultKey(card))
     setSelectedPasscode(card.passcode)
     setPrintCdbEntry(null)
     setOwned(1)
     setLocation('')
+
+    let ready = card
+    if (isOcgMarket(searchMarket) && needsYgocdbEnrich(card)) {
+      try {
+        ready = await enrichOneCatalogItem(card, { imageLang })
+        const key = resultKey(ready)
+        setResults((prev) => prev.map((r) => (resultKey(r) === key ? ready : r)))
+      } catch {
+        ready = card
+      }
+    }
+    setSetCodesFromSearch(ready.setCodes ?? [])
   }
 
   function handleSubmit(e) {
@@ -211,11 +257,6 @@ export default function AddCardForm({
       imageLang,
       printCdbEntry,
     )
-
-    if (ownedIds.has(card.id)) {
-      setSearchError(`「${card.id}」は既にコレクションにあります。別のレアリティを選んでください。`)
-      return
-    }
 
     onAdd({
       ...card,
@@ -232,14 +273,41 @@ export default function AddCardForm({
     )
   }
 
+  function resetSelection() {
+    setSelectedPasscode('')
+    setSelectedResultKey('')
+    setSetCodesFromSearch([])
+    setSearchError('')
+  }
+
+  function runAdvancedSearch() {
+    resetSelection()
+  }
+
   return (
     <form
       onSubmit={handleSubmit}
-      className="mb-6 rounded-2xl border border-amber-300/20 bg-zinc-900/70 p-4"
+      className="relative mb-6 rounded-2xl border border-amber-300/20 bg-zinc-900/70 p-4"
     >
-      <p className="text-sm font-medium text-amber-100">カードを検索して追加</p>
-      <p className="mt-1 text-xs text-zinc-400">
-        日本語名・ルビ・パスワードで検索（関連度の高い順・最大{SEARCH_DISPLAY_LIMIT}件）
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-amber-100">カードを検索して追加</p>
+          <p className="mt-1 text-xs text-zinc-400">
+            カード名と詳細設定は同時に使えます（例: ドラゴン族＋「青眼」）
+          </p>
+        </div>
+        {onClose ? (
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-lg border border-zinc-600/80 bg-zinc-950/80 px-3 py-1.5 text-xs text-zinc-300 hover:border-amber-300/40 hover:text-amber-100"
+          >
+            閉じる
+          </button>
+        ) : null}
+      </div>
+      <p className="text-xs text-zinc-500">
+        関連度の高い順・最大{SEARCH_DISPLAY_LIMIT}件
       </p>
       <p className="mt-1 text-xs text-zinc-500">
         登録数: {collectionCount} / {MAX_COLLECTION_SIZE}
@@ -252,13 +320,12 @@ export default function AddCardForm({
           value={search}
           onChange={(e) => {
             setSearch(e.target.value)
-            setSelectedPasscode('')
-            setSelectedResultKey('')
+            resetSelection()
           }}
           className="min-w-[200px] flex-1 rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-300"
         />
         <label className="flex items-center gap-2 text-xs text-zinc-300">
-          カード画像
+          検索・収録
           <select
             value={imageLang}
             onChange={(e) => setImageLang(e.target.value)}
@@ -270,26 +337,40 @@ export default function AddCardForm({
               </option>
             ))}
           </select>
+          <span className="rounded border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-200/90">
+            {marketLabel(searchMarket)}
+          </span>
         </label>
       </div>
+
+      <CardSearchAdvanced
+        open={showAdvancedSearch}
+        onToggle={() => setShowAdvancedSearch((v) => !v)}
+        filters={advFilters}
+        onChange={setAdvFilters}
+        onApply={runAdvancedSearch}
+        onClear={() => setShowAdvancedSearch(false)}
+      />
 
       {isSearching ? (
         <p className="mt-2 text-xs text-amber-300/80">検索中...</p>
       ) : null}
       {searchError ? <p className="mt-2 text-xs text-rose-300/90">{searchError}</p> : null}
 
-      {search.trim().length >= MIN_SEARCH_LENGTH ? (
+      {search.trim().length >= MIN_SEARCH_LENGTH || hasAdvFilters ? (
         <p className="mt-2 text-xs text-zinc-400">
           {isSearching
             ? '…'
-            : `${displayResults.length} 件表示（名前一致を優先・効果文のみのヒットは下げています）`}
+            : `${displayResults.length} 件表示（${marketLabel(searchMarket)}${
+                hasAdvFilters ? `・${describeCategoryFilters(advFilters).join('・')}` : '・名前一致を優先'
+              }）`}
         </p>
       ) : null}
 
       <div className="mt-3 max-h-[28rem] overflow-y-auto rounded-lg border border-zinc-700/80 bg-zinc-950/60 p-2">
-        {search.trim().length < MIN_SEARCH_LENGTH ? (
+        {search.trim().length < MIN_SEARCH_LENGTH && !hasAdvFilters ? (
           <p className="px-2 py-8 text-center text-xs text-zinc-500">
-            カード名を入力すると、画像一覧が表示されます
+            カード名を入力するか、詳細設定でテーマ・種族などを選んで検索してください
           </p>
         ) : displayResults.length === 0 && !isSearching ? (
           <p className="px-2 py-8 text-center text-xs text-zinc-500">
@@ -316,7 +397,7 @@ export default function AddCardForm({
                       : 'border-zinc-700/80 bg-zinc-900/50 hover:border-amber-300/30 hover:bg-zinc-800/80'
                   }`}
                 >
-                  <div className="relative aspect-[59/86] w-full overflow-hidden bg-zinc-800">
+                  <div className="card-art-frame relative aspect-[59/62] w-full overflow-hidden">
                     <img
                       src={imgSrc}
                       alt={card.name}
@@ -327,10 +408,11 @@ export default function AddCardForm({
                           e.currentTarget.src = imgFallback
                         }
                       }}
-                      className="h-full w-full object-cover object-top"
+                      className="absolute inset-0 h-full w-full"
                     />
+                    <CardArtWatermarkOverlay rarity={card.rarity} />
                     {card.nameMatch ? (
-                      <span className="absolute left-1 top-1 rounded bg-amber-400/90 px-1 py-0.5 text-[8px] font-medium text-zinc-950">
+                      <span className="absolute left-1 top-1 z-[4] rounded bg-amber-400/90 px-1 py-0.5 text-[8px] font-medium text-zinc-950">
                         名前
                       </span>
                     ) : null}
@@ -343,6 +425,11 @@ export default function AddCardForm({
                       <p className="mt-0.5 line-clamp-1 text-[9px] text-zinc-500">{card.nameEn}</p>
                     ) : null}
                     <p className="mt-0.5 truncate text-[9px] text-zinc-600">{card.passcode}</p>
+                    {card.category ? (
+                      <p className="mt-0.5 line-clamp-1 text-[9px] text-amber-600/80">
+                        {card.category}
+                      </p>
+                    ) : null}
                   </div>
                 </button>
               )
@@ -355,16 +442,19 @@ export default function AddCardForm({
         <div className="mt-4 space-y-3 rounded-lg border border-amber-300/15 bg-zinc-950/50 p-3">
           <div className="flex gap-3">
             {selectedEntry ? (
-              <img
-                src={previewImageSrc}
-                alt={selectedEntry.name}
-                onError={(e) => {
-                  if (e.currentTarget.src !== previewImageFallback) {
-                    e.currentTarget.src = previewImageFallback
-                  }
-                }}
-                className="h-36 w-[5.5rem] shrink-0 rounded object-cover object-top shadow-lg ring-1 ring-amber-400/30"
-              />
+              <div className="card-art-frame relative aspect-[59/62] h-36 w-auto shrink-0 overflow-hidden rounded shadow-lg ring-1 ring-amber-400/30">
+                <img
+                  src={previewImageSrc}
+                  alt={selectedEntry.name}
+                  onError={(e) => {
+                    if (e.currentTarget.src !== previewImageFallback) {
+                      e.currentTarget.src = previewImageFallback
+                    }
+                  }}
+                  className="absolute inset-0 h-full w-full"
+                />
+                <CardArtWatermarkOverlay rarity={selectedPrint?.rarity} />
+              </div>
             ) : null}
             <div className="min-w-0 flex-1">
               <p className="text-xs text-zinc-500">選択中</p>
@@ -377,7 +467,7 @@ export default function AddCardForm({
           </div>
 
           <label className="block text-sm text-zinc-300">
-            レアリティ・収録（このカードに存在するものだけ）
+            レアリティ・収録（{marketLabel(searchMarket)} のみ）
             {loadingPrints ? (
               <span className="ml-2 text-xs text-amber-300/80">読込中...</span>
             ) : null}
@@ -388,12 +478,13 @@ export default function AddCardForm({
               className="mt-1 w-full rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100 disabled:opacity-50"
             >
               {prints.length === 0 ? (
-                <option value="">レアリティ情報なし（パスワードで登録）</option>
+                <option value="">
+                  収録一覧なし（パスワードのみで登録する場合はそのまま追加可）
+                </option>
               ) : (
                 prints.map((p) => (
                   <option key={printKey(p)} value={printKey(p)}>
-                    {p.rarity}
-                    {p.isJp ? ' [JP]' : ''} — {p.setCode}
+                    {p.rarity} — {p.setCode}
                     {p.setName ? ` (${p.setName})` : ''}
                   </option>
                 ))
@@ -435,8 +526,18 @@ export default function AddCardForm({
           </div>
           {previewCard ? (
             <p className="text-xs text-zinc-500">
-              登録 ID: <span className="text-amber-200/90">{previewCard.id}</span>
+              型番: <span className="text-amber-200/90">{previewCard.setCode}</span>
               {previewCard.rarity ? ` / ${previewCard.rarity}` : ''}
+            </p>
+          ) : null}
+          {mergeTarget ? (
+            <p className="text-xs text-amber-200/90">
+              同じレアリティが既にあります（現在 {mergeTarget.owned} 枚）。保存すると{' '}
+              {mergeTarget.owned + (Number(owned) || 1)} 枚になります。
+            </p>
+          ) : previewCard && ownedCards.some((c) => c.name === previewCard.name) ? (
+            <p className="text-xs text-zinc-400">
+              別レアリティとして新しい枠に追加されます。
             </p>
           ) : null}
         </div>
@@ -446,10 +547,10 @@ export default function AddCardForm({
 
       <button
         type="submit"
-        disabled={isSaving || !selectedEntry || loadingPrints}
+        disabled={isSaving || !selectedEntry}
         className="mt-4 w-full rounded-lg border border-amber-300/40 bg-amber-300/15 py-2 text-sm text-amber-100 disabled:opacity-40"
       >
-        {isSaving ? '保存中...' : 'カードを追加して保存'}
+        {isSaving ? '保存中...' : loadingPrints ? 'カードを追加して保存（収録読込中…）' : 'カードを追加して保存'}
       </button>
     </form>
   )

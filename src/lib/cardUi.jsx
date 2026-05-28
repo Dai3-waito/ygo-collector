@@ -15,6 +15,21 @@ export function getRarityTheme(rarity) {
   return 'from-zinc-600/35 via-zinc-500/20 to-zinc-700/30'
 }
 
+/** カード画像の上に載せる透かし用レアリティ色 */
+export function getRarityWatermarkClass(rarity) {
+  return `pointer-events-none absolute inset-0 z-[2] bg-gradient-to-br ${getRarityTheme(rarity)} opacity-[0.22] mix-blend-soft-light`
+}
+
+/** 絵柄エリア用の透かしオーバーレイ（画像の上に重ねる） */
+export function CardArtWatermarkOverlay({ rarity }) {
+  return (
+    <>
+      <div className="card-art-watermark-veil pointer-events-none absolute inset-0 z-[1]" aria-hidden />
+      {rarity ? <div className={getRarityWatermarkClass(rarity)} aria-hidden /> : null}
+    </>
+  )
+}
+
 export function ProgressBar({ percent, className = 'h-2.5' }) {
   const width = Math.min(100, Math.max(0, percent))
   return (

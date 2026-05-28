@@ -9,3 +9,41 @@ body {
   min-height: 100vh;
   font-family: "Inter", "Noto Sans JP", system-ui, -apple-system, sans-serif;
 }
+
+/* カード画像：絵柄〜ステータス手前まで（効果文は切る・上寄せ）+ 透かし */
+.card-art-frame {
+  background: linear-gradient(165deg, #1c1916 0%, #121010 100%);
+}
+
+.card-art-frame img {
+  z-index: 0;
+  object-fit: cover;
+  object-position: top center;
+  image-rendering: auto;
+}
+
+.card-art-watermark-veil {
+  background: linear-gradient(
+    165deg,
+    rgba(255, 235, 200, 0.12) 0%,
+    rgba(20, 18, 16, 0.18) 40%,
+    rgba(12, 11, 10, 0.32) 100%
+  );
+  mix-blend-mode: soft-light;
+}
+
+.card-art-frame::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    -24deg,
+    transparent,
+    transparent 14px,
+    rgba(255, 255, 255, 0.025) 14px,
+    rgba(255, 255, 255, 0.025) 15px
+  );
+  opacity: 0.9;
+}

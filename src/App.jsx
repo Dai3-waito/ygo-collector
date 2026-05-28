@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import AddCardForm from './components/AddCardForm.jsx'
+import CollectionCardArt from './components/CollectionCardArt.jsx'
 import AuthPanel from './components/AuthPanel.jsx'
 import FolderBar from './components/FolderBar.jsx'
 import PackCompletionPanel from './components/PackCompletionPanel.jsx'
 import ProfileModal from './components/ProfileModal.jsx'
 import ResetPasswordPanel from './components/ResetPasswordPanel.jsx'
 import { deleteUserCard, fetchUserCards, upsertUserCard } from './lib/cardsApi.js'
-import { getRarityTheme } from './lib/cardUi.jsx'
 import { computePackCompletionList } from './lib/packCompletion.js'
 import { loadOfficialPackData } from './lib/packOfficialApi.js'
 import { resolveCanonicalPackName } from './lib/packTotalsStorage.js'
@@ -17,6 +17,8 @@ import {
   loadFolders,
   saveFolders,
 } from './lib/foldersStorage.js'
+import { findCollectionMatch } from './lib/collectionCardId.js'
+import { setCodeFromCollectionId } from './lib/collectionCardId.js'
 import { normalizeForSearch } from './lib/searchUtils.js'
 import { supabase } from './lib/supabase.js'
 
@@ -27,13 +29,12 @@ function App() {
   const [cards, setCards] = useState([])
   const [query, setQuery] = useState('')
   const [sortBy, setSortBy] = useState('owned')
-  const [brokenImages, setBrokenImages] = useState({})
   const [customImages, setCustomImages] = useState({})
   const [targetCardId, setTargetCardId] = useState('')
   const [saveMessage, setSaveMessage] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
-  const [showAddForm, setShowAddForm] = useState(false)
+  const [showAddForm, setShowAddForm] = useState(true)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [showProfile, setShowProfile] = useState(false)
   const [recoveryMode, setRecoveryMode] = useState(false)
@@ -247,12 +248,37 @@ function App() {
 
   async function handleAddCard(card) {
     if (!userId) return
-    if (cards.length >= MAX_COLLECTION_SIZE) {
-      setSaveMessage(`コレクション上限（${MAX_COLLECTION_SIZE}件）に達しています`)
+
+    const existing = findCollectionMatch(cards, card)
+    const addQty = Math.max(1, Number(card.owned) || 1)
+
+    if (existing) {
+      const updated = {
+        ...existing,
+        owned: existing.owned + addQty,
+        location: card.location?.trim() || existing.location,
+        folder: card.folder?.trim() || existing.folder,
+        imageUrl: existing.imageUrl || card.imageUrl,
+        passcode: existing.passcode || card.passcode,
+      }
+
+      setIsSaving(true)
+      try {
+        const ok = await saveCard(updated, {
+          message: `${card.name}（${card.rarity || 'レアリティ未設定'}）の所持数を ${updated.owned} 枚に更新しました`,
+        })
+        if (ok) {
+          setCards((prev) => prev.map((c) => (c.id === existing.id ? updated : c)))
+          setShowAddForm(false)
+        }
+      } finally {
+        setIsSaving(false)
+      }
       return
     }
-    if (cards.some((c) => c.id === card.id)) {
-      setSaveMessage('この収録（型番）は既にコレクションにあります')
+
+    if (cards.length >= MAX_COLLECTION_SIZE) {
+      setSaveMessage(`コレクション上限（${MAX_COLLECTION_SIZE}件）に達しています`)
       return
     }
 
@@ -472,15 +498,17 @@ function App() {
           />
         ) : (
           <>
-            <section className="mb-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setShowAddForm((v) => !v)}
-                className="rounded-lg border border-amber-300/40 bg-amber-300/10 px-4 py-2 text-sm text-amber-100 hover:bg-amber-300/20"
-              >
-                {showAddForm ? '追加フォームを閉じる' : '＋ カードを追加'}
-              </button>
-            </section>
+            {!showAddForm ? (
+              <section className="mb-4">
+                <button
+                  type="button"
+                  onClick={() => setShowAddForm(true)}
+                  className="rounded-lg border border-amber-300/40 bg-amber-300/10 px-4 py-2 text-sm text-amber-100 hover:bg-amber-300/20"
+                >
+                  ＋ カードを追加
+                </button>
+              </section>
+            ) : null}
 
             {showAddForm ? (
               <AddCardForm
@@ -489,6 +517,7 @@ function App() {
                 collectionCount={cards.length}
                 onAdd={handleAddCard}
                 isSaving={isSaving}
+                onClose={() => setShowAddForm(false)}
               />
             ) : null}
 
@@ -547,8 +576,6 @@ function App() {
                   officialTotal: null,
                   usesOfficialDenominator: false,
                 }
-              const imageSrc = customImages[card.id] || card.imageUrl
-              const showImage = imageSrc && !brokenImages[card.id]
               return (
                 <article
                   key={card.id}
@@ -557,32 +584,22 @@ function App() {
                   <button
                     type="button"
                     onClick={() => openImagePicker(card.id)}
-                    className="relative h-48 w-full overflow-hidden text-left"
+                    className="card-art-frame relative aspect-[59/62] w-full overflow-hidden text-left"
+                    aria-label={`${card.name}の画像を変更`}
                   >
-                    <div
-                      className={`absolute inset-0 bg-gradient-to-br ${getRarityTheme(card.rarity)}`}
+                    <CollectionCardArt
+                      card={card}
+                      customSrc={customImages[card.id]}
+                      rarity={card.rarity}
                     />
-                    {showImage ? (
-                      <img
-                        src={imageSrc}
-                        alt={card.name}
-                        loading="lazy"
-                        onError={() =>
-                          setBrokenImages((prev) => ({ ...prev, [card.id]: true }))
-                        }
-                        className="absolute inset-0 h-full w-full object-cover object-top"
-                      />
-                    ) : (
-                      <div className="absolute left-3 top-3 rounded-md border border-amber-200/30 bg-zinc-950/50 px-2 py-1 text-[10px] text-amber-100/90">
-                        ADD IMAGE
-                      </div>
-                    )}
-                    <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/35 to-transparent" />
-                    <div className="absolute bottom-3 left-3 right-3 rounded-lg border border-amber-300/25 bg-zinc-950/65 p-2 backdrop-blur-sm">
-                      <p className="truncate text-sm font-semibold text-amber-100">{card.name}</p>
-                      <p className="truncate text-[11px] text-zinc-400">{card.id}</p>
-                    </div>
                   </button>
+
+                  <div className="border-b border-amber-300/10 px-4 pb-3 pt-2.5">
+                    <p className="truncate text-sm font-semibold text-amber-100">{card.name}</p>
+                    <p className="truncate text-[11px] text-zinc-500">
+                      {card.setCode ?? setCodeFromCollectionId(card.id)}
+                    </p>
+                  </div>
 
                   <div className="space-y-3 p-4">
                     {card.pack ? (

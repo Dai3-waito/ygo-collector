@@ -1,13 +1,15 @@
 import { packCatalog } from '../data/packCatalog.js'
+import { dominantSetPrefix, setPrefixFromCardId } from './cardMarket.js'
+import { lookupProdeckSetMeta } from './prodeckPackApi.js'
 import { neuronPackPageUrl } from './neuronParse.js'
 import { resolveCanonicalPackName } from './packTotalsStorage.js'
 
 const LIST_API = '/api/ygo-neuron-list'
 const PACK_API = '/api/ygo-neuron-pack'
 const PACK_RARITIES_API = '/api/ygo-neuron-pack-rarities'
-const LIST_CACHE_KEY = 'ygo-neuron-pack-list-v4'
+const LIST_CACHE_KEY = 'ygo-neuron-pack-list-v5'
 const TOTALS_CACHE_KEY = 'ygo-neuron-pack-totals-v4'
-const RARITIES_CACHE_KEY = 'ygo-neuron-pack-rarities-v2'
+const RARITIES_CACHE_KEY = 'ygo-neuron-pack-rarities-v4'
 const CACHE_MS = 7 * 24 * 60 * 60 * 1000
 
 export function normalizePackName(name) {
@@ -41,12 +43,16 @@ export function packSearchTokens(packName) {
   return [...tokens].filter((t) => t.length >= 2)
 }
 
+function compactPackKey(name) {
+  return normalizePackName(name).replace(/\s/g, '')
+}
+
 function namesMatch(a, b) {
   const na = normalizePackName(a)
   const nb = normalizePackName(b)
   if (!na || !nb) return false
   if (na === nb) return true
-  if (na.includes(nb) || nb.includes(na)) return true
+  if (compactPackKey(a) === compactPackKey(b)) return true
 
   const aa = na.replace(/[^\x20-\x7e]/g, '').trim()
   const ab = nb.replace(/[^\x20-\x7e]/g, '').trim()
@@ -54,6 +60,167 @@ function namesMatch(a, b) {
     if (aa === ab || aa.includes(ab) || ab.includes(aa)) return true
   }
   return false
+}
+
+function substringMatchScore(a, b) {
+  const na = normalizePackName(a)
+  const nb = normalizePackName(b)
+  if (!na || !nb) return 0
+  if (na === nb) return 100
+  const ca = compactPackKey(a)
+  const cb = compactPackKey(b)
+  if (ca === cb) return 98
+
+  const shorter = na.length <= nb.length ? na : nb
+  const longer = na.length > nb.length ? na : nb
+  if (shorter.length < 8 || !longer.includes(shorter)) return 0
+  const ratio = shorter.length / longer.length
+  return ratio >= 0.72 ? 88 : 0
+}
+
+/** 収録名の [英語セット名] を取り出す */
+export function englishBracketFromNeuronName(neuronName) {
+  const m = String(neuronName ?? '').match(/\[([^\]]+)\]/)
+  return m?.[1]?.trim() ?? null
+}
+
+function isBonusPackNeuronName(name) {
+  return /\+1|ボーナス/i.test(String(name ?? ''))
+}
+
+/** packCatalog のエントリ（表記ゆれ・日本語キーワード含む） */
+function findCatalogMeta(packName) {
+  const canonical = resolveCanonicalPackName(packName)
+  if (packCatalog[canonical]) return packCatalog[canonical]
+
+  const norm = normalizePackName(packName)
+  const compact = compactPackKey(packName)
+
+  for (const [label, meta] of Object.entries(packCatalog)) {
+    if (normalizePackName(label) === norm || compactPackKey(label) === compact) return meta
+    if (meta.neuronKeyword && namesMatch(packName, meta.neuronKeyword)) return meta
+    if (meta.deckSetName && namesMatch(packName, meta.deckSetName)) return meta
+  }
+  return null
+}
+
+function requiredSideVariant(packName) {
+  const m = String(packName ?? '').match(/side\s*[：:]\s*([a-z0-9]+)/i)
+  return m?.[1]?.toLowerCase() ?? null
+}
+
+function neuronNameMatchesSide(name, sideVariant) {
+  if (!sideVariant) return true
+  return normalizePackName(name).includes(sideVariant)
+}
+
+function resolveSetCodeFromPack(packName, packCards) {
+  const fromCards = dominantSetPrefix(packCards)
+  if (fromCards) return fromCards
+  const raw = String(packName ?? '').trim()
+  if (/^[A-Z0-9]{2,8}$/i.test(raw)) return raw.toUpperCase()
+  const bracket = raw.match(/\[([A-Z0-9]{2,8})\]/i)
+  return bracket?.[1]?.toUpperCase() ?? null
+}
+
+function neuronEntryResult(entry) {
+  if (!entry?.pid) return null
+  return {
+    pid: entry.pid,
+    url: entry.url || neuronPackPageUrl(entry.pid),
+    name: entry.name,
+  }
+}
+
+/** 型番 → YGOPRODeck セット名 → 収録 [英語名] の一致（最優先の自動照合） */
+function matchNeuronEntryBySetCode(packName, packCards, packList, prodeckSetList, wantsBonus) {
+  if (!packList?.length) return null
+
+  const setCode = resolveSetCodeFromPack(packName, packCards)
+  if (!setCode) return null
+
+  const meta = prodeckSetList?.length
+    ? lookupProdeckSetMeta(packName, setCode, prodeckSetList)
+    : null
+  if (!meta?.setName) return null
+
+  const targetNorm = normalizePackName(meta.setName)
+  const targetCompact = compactPackKey(meta.setName)
+
+  const sideVariant = requiredSideVariant(packName)
+
+  for (const entry of packList) {
+    if (isBonusPackNeuronName(entry.name) !== wantsBonus) continue
+    if (!neuronNameMatchesSide(entry.name, sideVariant)) continue
+
+    const bracket = englishBracketFromNeuronName(entry.name)
+    if (!bracket) continue
+
+    const bn = normalizePackName(bracket)
+    const bc = compactPackKey(bracket)
+    if (
+      bn === targetNorm ||
+      bc === targetCompact ||
+      namesMatch(bracket, meta.setName) ||
+      substringMatchScore(bracket, meta.setName) >= 88
+    ) {
+      return entry
+    }
+  }
+
+  return null
+}
+
+/** パック表記と収録名の直接照合（誤マッチを抑えた fuzzy） */
+function matchNeuronEntryByPackName(packName, packCards, packList, wantsBonus) {
+  const canonical = resolveCanonicalPackName(packName)
+  const meta = findCatalogMeta(packName)
+  const sideVariant = requiredSideVariant(packName)
+
+  const keywords = [
+    ...packSearchTokens(canonical),
+    ...packSearchTokens(packName),
+    ...(meta?.neuronKeyword ? packSearchTokens(meta.neuronKeyword) : []),
+    ...(meta?.deckSetName ? packSearchTokens(meta.deckSetName) : []),
+  ]
+
+  let best = null
+  let bestScore = 0
+
+  for (const entry of packList ?? []) {
+    const name = entry.name
+    if (isBonusPackNeuronName(name) !== wantsBonus) continue
+    if (!neuronNameMatchesSide(name, sideVariant)) continue
+
+    const entryTokens = packSearchTokens(name)
+    const bracket = englishBracketFromNeuronName(name)
+
+    for (const kw of keywords) {
+      if (kw.length < 3) continue
+
+      for (const et of entryTokens) {
+        let score = 0
+        if (namesMatch(kw, et) || namesMatch(kw, name)) score = 100
+        else if (bracket && namesMatch(kw, bracket)) score = 96
+        else {
+          const partial = substringMatchScore(kw, et)
+          if (partial > 0) score = partial
+        }
+
+        if (score > bestScore || (score === bestScore && score >= 96 && !best)) {
+          bestScore = score
+          best = entry
+        } else if (score === bestScore && score >= 96 && best) {
+          const preferCurrent =
+            !isBonusPackNeuronName(name) && isBonusPackNeuronName(best.name)
+          if (preferCurrent) best = entry
+        }
+      }
+    }
+  }
+
+  if (bestScore < 70 || !best) return null
+  return best
 }
 
 function readCache(key) {
@@ -107,91 +274,42 @@ export async function fetchNeuronPackList(signal) {
   return packs
 }
 
-export function setPrefixFromCardId(cardId) {
-  const match = String(cardId ?? '').match(/^([A-Z0-9]{2,8})-JP/i)
-  return match ? match[1].toUpperCase() : null
-}
-
-export function dominantSetPrefix(packCards) {
-  const counts = new Map()
-  for (const card of packCards) {
-    const prefix = setPrefixFromCardId(card.id)
-    if (!prefix) continue
-    counts.set(prefix, (counts.get(prefix) ?? 0) + 1)
-  }
-  let best = null
-  let max = 0
-  for (const [prefix, n] of counts) {
-    if (n > max) {
-      max = n
-      best = prefix
-    }
-  }
-  return best
-}
+export { dominantSetPrefix, setPrefixFromCardId } from './cardMarket.js'
 
 /** 収録一覧のエントリ（pid + 公式 link_value の URL） */
-export function resolveNeuronEntry(packName, packCards, packList) {
+export function resolveNeuronEntry(packName, packCards, packList, prodeckSetList = null) {
   const canonical = resolveCanonicalPackName(packName)
-  const meta = packCatalog[canonical]
+  const meta = findCatalogMeta(packName)
+  const wantsBonus = /\+1|ボーナス/i.test(`${canonical} ${packName}`)
 
   if (meta?.neuronPid) {
     const fromList = packList?.find((p) => p.pid === meta.neuronPid)
-    return {
+    return neuronEntryResult({
       pid: meta.neuronPid,
-      url: fromList?.url || neuronPackPageUrl(meta.neuronPid),
+      url: fromList?.url,
       name: fromList?.name,
-    }
+    })
   }
 
-  const setPrefix = dominantSetPrefix(packCards)
-  const wantsBonus = /\+1|ボーナス/i.test(`${canonical} ${packName}`)
-  const keywords = [
-    ...packSearchTokens(canonical),
-    ...packSearchTokens(packName),
-    ...(meta?.neuronKeyword ? packSearchTokens(meta.neuronKeyword) : []),
-    ...(meta?.deckSetName ? packSearchTokens(meta.deckSetName) : []),
-  ]
+  if (!packList?.length) return null
 
-  let best = null
-  let bestScore = 0
+  const bySetCode = matchNeuronEntryBySetCode(
+    packName,
+    packCards,
+    packList,
+    prodeckSetList,
+    wantsBonus,
+  )
+  if (bySetCode) return neuronEntryResult(bySetCode)
 
-  for (const entry of packList ?? []) {
-    const name = entry.name
-    if (!wantsBonus && /\+1|ボーナス/i.test(name)) continue
+  const byName = matchNeuronEntryByPackName(packName, packCards, packList, wantsBonus)
+  if (byName) return neuronEntryResult(byName)
 
-    const entryTokens = packSearchTokens(name)
-    const upperName = name.toUpperCase()
-
-    for (const kw of keywords) {
-      for (const et of entryTokens) {
-        let score = 0
-        if (namesMatch(kw, et) || namesMatch(kw, name)) score = 100
-        else if (normalizePackName(kw) && normalizePackName(et)) {
-          const nk = normalizePackName(kw)
-          const ne = normalizePackName(et)
-          if (nk.includes(ne) || ne.includes(nk)) score = 88
-        }
-        if (setPrefix && upperName.includes(setPrefix)) score = Math.max(score, 82)
-
-        if (score > bestScore) {
-          bestScore = score
-          best = entry
-        }
-      }
-    }
-  }
-
-  if (bestScore < 55 || !best) return null
-  return {
-    pid: best.pid,
-    url: best.url || neuronPackPageUrl(best.pid),
-    name: best.name,
-  }
+  return null
 }
 
-export function resolveNeuronPid(packName, packCards, packList) {
-  return resolveNeuronEntry(packName, packCards, packList)?.pid ?? null
+export function resolveNeuronPid(packName, packCards, packList, prodeckSetList = null) {
+  return resolveNeuronEntry(packName, packCards, packList, prodeckSetList)?.pid ?? null
 }
 
 /**

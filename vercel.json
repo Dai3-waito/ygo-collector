@@ -11,6 +11,9 @@
     },
     "api/ygo-neuron-list.js": {
       "maxDuration": 30
+    },
+    "api/ygo-neuron-card.js": {
+      "maxDuration": 30
     }
   }
 }

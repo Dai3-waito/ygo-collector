@@ -1,3 +1,4 @@
+import { formatCardCategory } from './cardCategory.js'
 import {
   SEARCH_DISPLAY_LIMIT,
   SEARCH_FETCH_PAGES_MAX,
@@ -36,11 +37,14 @@ export function cdbItemToCatalog(item, imageLang = 'jp', query = '') {
   const typeLine = item.text?.types ?? ''
   const imageKey = item.cid ?? passcode
   const relevanceScore = scoreSearchItem(item, query)
+  const category = formatCardCategory(typeLine)
   return {
     id: passcode,
     name: item.jp_name || item.sc_name || item.cn_name || item.en_name || passcode,
     nameEn: item.en_name ?? '',
     pack: typeLine.split('\n')[0]?.trim() || '',
+    category,
+    typesLine: typeLine,
     rarity: '',
     imageUrl: cardImageUrl(imageKey, { lang: imageLang, size: 'half' }),
     imageThumb: cardImageUrl(imageKey, { lang: imageLang, size: 'thumb' }),
@@ -127,4 +131,79 @@ export async function lookupCdbBySetCode(
   const hits = await searchYgoCardsJa(code, { maxResults: 12, signal, imageLang })
   const exact = hits.find((h) => h.setCodes?.includes(code))
   return exact ?? hits[0] ?? null
+}
+
+const ENRICH_CHUNK = 6
+const passcodeCatalogCache = new Map()
+
+export function needsYgocdbEnrich(item) {
+  const passcode = String(item?.passcode ?? '').trim()
+  if (!/^\d{8}$/.test(passcode)) return false
+  if (!item?.typesLine) return true
+  if (!item?.cid) return true
+  if (!item?.setCodes?.length) return true
+  if (/^[a-zA-Z0-9\s'.-]+$/.test(String(item?.name ?? '').trim())) return true
+  return false
+}
+
+function mergeEnrichedItem(item, hit) {
+  return {
+    ...item,
+    name: hit.name || item.name,
+    nameEn: item.nameEn || hit.nameEn || item.name,
+    typesLine: hit.typesLine || item.typesLine,
+    setCodes: hit.setCodes?.length ? hit.setCodes : item.setCodes,
+    cid: hit.cid ?? item.cid,
+    category: hit.category || item.category,
+    imageUrl: hit.imageUrl || item.imageUrl,
+    imageThumb: hit.imageThumb || item.imageThumb,
+    imageFallback: hit.imageFallback || item.imageFallback,
+    nameMatch: item.nameMatch ?? hit.nameMatch,
+  }
+}
+
+/** 1件だけ百鸽で補完（選択時・キャッシュ付き） */
+export async function enrichOneCatalogItem(item, { signal, imageLang = 'jp' } = {}) {
+  if (!needsYgocdbEnrich(item)) return item
+
+  const passcode = String(item.passcode).trim()
+  const cached = passcodeCatalogCache.get(passcode)
+  if (cached) return mergeEnrichedItem(item, cached)
+
+  try {
+    const hits = await searchYgoCardsJa(passcode, { maxResults: 2, signal, imageLang })
+    const hit = hits.find((h) => String(h.passcode) === passcode) ?? hits[0]
+    if (!hit) return item
+
+    passcodeCatalogCache.set(passcode, hit)
+    return mergeEnrichedItem(item, hit)
+  } catch {
+    return item
+  }
+}
+
+/**
+ * 上位だけ百鸽補完（全件補完は検索が遅くなるため limit 必須）
+ * @param {number} [options.limit=0] 0 なら補完しない
+ */
+export async function enrichCatalogWithYgocdb(
+  items,
+  { signal, imageLang = 'jp', limit = 0 } = {},
+) {
+  const list = items ?? []
+  if (!list.length || limit <= 0) return list
+
+  const headCount = Math.min(limit, list.length)
+  const head = list.slice(0, headCount)
+  const tail = list.slice(headCount)
+
+  const out = []
+  for (let i = 0; i < head.length; i += ENRICH_CHUNK) {
+    const chunk = head.slice(i, i + ENRICH_CHUNK)
+    const enriched = await Promise.all(
+      chunk.map((item) => enrichOneCatalogItem(item, { signal, imageLang })),
+    )
+    out.push(...enriched)
+  }
+  return [...out, ...tail]
 }

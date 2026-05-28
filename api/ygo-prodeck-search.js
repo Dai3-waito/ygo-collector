@@ -13,14 +13,26 @@ export default async function handler(req, res) {
   }
 
   const fname = String(req.query.fname ?? req.query.q ?? '').trim()
-  if (fname.length < 2) {
-    res.status(400).json({ error: 'fname must be at least 2 characters' })
+  const type = String(req.query.type ?? '').trim()
+  const race = String(req.query.race ?? '').trim()
+  const attribute = String(req.query.attribute ?? '').trim()
+  const level = String(req.query.level ?? '').trim()
+  const archetype = String(req.query.archetype ?? '').trim()
+
+  if (fname.length < 2 && !type && !race && !attribute && !level && !archetype) {
+    res.status(400).json({ error: 'fname, type, race, attribute, archetype, or level is required' })
     return
   }
 
   const num = String(req.query.num ?? '100')
   const offset = String(req.query.offset ?? '0')
-  const params = new URLSearchParams({ fname, num, offset, misc: 'yes' })
+  const params = new URLSearchParams({ num, offset, misc: 'yes' })
+  if (fname.length >= 2) params.set('fname', fname)
+  if (type) params.set('type', type)
+  if (race) params.set('race', race)
+  if (attribute) params.set('attribute', attribute)
+  if (level) params.set('level', level)
+  if (archetype) params.set('archetype', archetype)
 
   try {
     const upstream = await fetch(
