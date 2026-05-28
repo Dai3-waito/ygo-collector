@@ -33,6 +33,7 @@ export default async function handler(req, res) {
     }
 
     const rarities = Object.fromEntries(result.counts)
+    res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=604800')
     res.status(200).json({
       setcode,
       setName: result.setName,

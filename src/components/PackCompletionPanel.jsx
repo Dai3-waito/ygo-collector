@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { computePackCompletionList } from '../lib/packCompletion.js'
 import { computeRarityCompletionByPack } from '../lib/rarityCompletion.js'
 import { ProgressBar, RarityProgressBar } from '../lib/cardUi.jsx'
@@ -28,6 +28,7 @@ export default function PackCompletionPanel({
   )
 
   const resolvedCount = packCompletionList.filter((p) => p.usesOfficialDenominator).length
+  const rarityOfficialCount = rarityByPackList.filter((p) => p.hasOfficialBreakdown).length
 
   return (
     <section className="overflow-hidden rounded-2xl border border-amber-300/25 bg-[linear-gradient(145deg,#1a1510_0%,#0f0f12_45%,#121018_100%)] shadow-[0_12px_40px_rgba(0,0,0,0.45)]">
@@ -76,7 +77,11 @@ export default function PackCompletionPanel({
             isLoadingOfficial={isLoadingOfficial}
           />
         ) : (
-          <RarityView rarityByPackList={rarityByPackList} isLoadingOfficial={isLoadingOfficial} />
+          <RarityView
+            rarityByPackList={rarityByPackList}
+            isLoadingOfficial={isLoadingOfficial}
+            rarityOfficialCount={rarityOfficialCount}
+          />
         )}
       </div>
     </section>
@@ -105,8 +110,19 @@ function PackView({ packCompletionList, resolvedCount, isLoadingOfficial }) {
   )
 }
 
-function RarityView({ rarityByPackList, isLoadingOfficial }) {
+function RarityView({ rarityByPackList, isLoadingOfficial, rarityOfficialCount }) {
   const [expandedPack, setExpandedPack] = useState(null)
+
+  useEffect(() => {
+    if (rarityByPackList.length === 0) {
+      setExpandedPack(null)
+      return
+    }
+    setExpandedPack((prev) => {
+      if (prev && rarityByPackList.some((p) => p.pack === prev)) return prev
+      return rarityByPackList[0].pack
+    })
+  }, [rarityByPackList])
 
   function togglePack(pack) {
     setExpandedPack((prev) => (prev === pack ? null : pack))
@@ -116,8 +132,14 @@ function RarityView({ rarityByPackList, isLoadingOfficial }) {
     <>
       <p className="mb-4 text-xs text-zinc-500">
         パックをタップして開くと、収録されている全レアリティの所持率を表示します。分母は
-        YGOPRODeck を優先し、未取得のパックは遊戯王ニューロン「収録」から補います。
+        YGOPRODeck を優先し、取得できない場合は遊戯王ニューロン「収録」から補います。
+        {!isLoadingOfficial && rarityByPackList.length > 0
+          ? `（公式内訳 ${rarityOfficialCount} / ${rarityByPackList.length} パック）`
+          : ''}
       </p>
+      {isLoadingOfficial ? (
+        <p className="mb-3 text-sm text-amber-300/90">レアリティ内訳を取得中…（初回は数十秒かかることがあります）</p>
+      ) : null}
       {rarityByPackList.length === 0 ? (
         <p className="text-sm text-zinc-400">カードを追加すると表示されます。</p>
       ) : (

@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "api/ygo-set-rarities.js": {
+      "maxDuration": 60
+    },
+    "api/ygo-neuron-pack-rarities.js": {
+      "maxDuration": 30
+    },
+    "api/ygo-neuron-pack.js": {
+      "maxDuration": 30
+    },
+    "api/ygo-neuron-list.js": {
+      "maxDuration": 30
+    }
+  }
+}

@@ -7,7 +7,7 @@ const PACK_API = '/api/ygo-neuron-pack'
 const PACK_RARITIES_API = '/api/ygo-neuron-pack-rarities'
 const LIST_CACHE_KEY = 'ygo-neuron-pack-list-v4'
 const TOTALS_CACHE_KEY = 'ygo-neuron-pack-totals-v4'
-const RARITIES_CACHE_KEY = 'ygo-neuron-pack-rarities-v1'
+const RARITIES_CACHE_KEY = 'ygo-neuron-pack-rarities-v2'
 const CACHE_MS = 7 * 24 * 60 * 60 * 1000
 
 export function normalizePackName(name) {
@@ -264,6 +264,41 @@ function writeRaritiesCache(map) {
   }
 }
 
+function parseNeuronRarityResponse(body) {
+  if (!body?.rarities) return null
+  const counts = new Map()
+  for (const [rarity, count] of Object.entries(body.rarities)) {
+    const n = Number(count)
+    if (Number.isFinite(n) && n > 0) counts.set(rarity, Math.floor(n))
+  }
+  return counts.size > 0 ? counts : null
+}
+
+/** @returns {Promise<Map<string, number>|null>} */
+export async function fetchNeuronPackRarityByPid(pid, signal) {
+  const id = String(pid ?? '').trim()
+  if (!id) return null
+
+  const cache = readRaritiesCache()
+  if (cache.has(id)) return cache.get(id)
+
+  const res = await fetch(`${PACK_RARITIES_API}?pid=${encodeURIComponent(id)}`, { signal })
+  let body = {}
+  try {
+    body = await res.json()
+  } catch {
+    body = {}
+  }
+  if (!res.ok) return null
+
+  const counts = parseNeuronRarityResponse(body)
+  if (counts) {
+    cache.set(id, counts)
+    writeRaritiesCache(cache)
+  }
+  return counts
+}
+
 /** @returns {Promise<Map<string, Map<string, number>>>} pid → rarity → 枚数 */
 export async function fetchNeuronPackRarities(pids, packList, signal) {
   const cache = readRaritiesCache()
@@ -285,15 +320,9 @@ export async function fetchNeuronPackRarities(pids, packList, signal) {
           } catch {
             body = {}
           }
-          if (!res.ok || !body.rarities) return
-          const counts = new Map()
-          for (const [rarity, count] of Object.entries(body.rarities)) {
-            const n = Number(count)
-            if (Number.isFinite(n) && n > 0) counts.set(rarity, Math.floor(n))
-          }
-          if (counts.size > 0) {
-            cache.set(pid, counts)
-          }
+          if (!res.ok) return
+          const counts = parseNeuronRarityResponse(body)
+          if (counts) cache.set(pid, counts)
         } catch (error) {
           if (error.name === 'AbortError') throw error
         }

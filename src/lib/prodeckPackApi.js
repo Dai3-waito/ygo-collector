@@ -256,7 +256,8 @@ export function countRaritiesFromSetInfo(rows) {
   return counts
 }
 
-const SETINFO_RARITY_CACHE = 'ygo-prodeck-setinfo-rarity-v2'
+const SETINFO_RARITY_CACHE = 'ygo-prodeck-setinfo-rarity-v3'
+const PRODECK_RARITY_TIMEOUT_MS = 8_000
 
 function readRarityCache() {
   try {
@@ -285,7 +286,7 @@ function writeRarityCache(map) {
   }
 }
 
-async function fetchRarityMapForSet(setCode, setName, signal) {
+export async function fetchRarityMapForSet(setCode, setName, signal) {
   const code = String(setCode ?? '').trim().toUpperCase()
   if (!code) return null
 
@@ -308,6 +309,42 @@ async function fetchRarityMapForSet(setCode, setName, signal) {
     if (Number.isFinite(n) && n > 0) counts.set(rarity, Math.floor(n))
   }
   return counts.size > 0 ? counts : null
+}
+
+/** YGOPRODeck は遅いことがあるためタイムアウト付き */
+export async function fetchRarityMapForSetWithTimeout(
+  setCode,
+  setName,
+  signal,
+  timeoutMs = PRODECK_RARITY_TIMEOUT_MS,
+) {
+  if (signal?.aborted) return null
+
+  const cache = readRarityCache()
+  const code = String(setCode ?? '').trim().toUpperCase()
+  if (code && cache.has(code)) {
+    const cached = cache.get(code)
+    if (cached?.size) return cached
+  }
+
+  let timeoutId
+  const timeoutPromise = new Promise((resolve) => {
+    timeoutId = setTimeout(() => resolve(null), timeoutMs)
+  })
+
+  try {
+    const result = await Promise.race([
+      fetchRarityMapForSet(setCode, setName, signal),
+      timeoutPromise,
+    ])
+    if (result?.size && code) {
+      cache.set(code, result)
+      writeRarityCache(cache)
+    }
+    return result
+  } finally {
+    clearTimeout(timeoutId)
+  }
 }
 
 /** setCode → Map<rarity, count> */

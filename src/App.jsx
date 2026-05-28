@@ -81,6 +81,23 @@ function App() {
     }
   }, [userId])
 
+  const officialDataKey = useMemo(() => {
+    const packs = [
+      ...new Set(cards.map((c) => resolveCanonicalPackName(c.pack)).filter(Boolean)),
+    ].sort()
+    const setPrefixes = [
+      ...new Set(
+        cards
+          .map((c) => {
+            const m = String(c.id ?? '').match(/^([A-Z0-9]{2,8})-JP/i)
+            return m ? m[1].toUpperCase() : ''
+          })
+          .filter(Boolean),
+      ),
+    ].sort()
+    return `${packs.join('\u0001')}|${setPrefixes.join('\u0001')}`
+  }, [cards])
+
   useEffect(() => {
     if (!userId) {
       setOfficialData(null)
@@ -112,7 +129,8 @@ function App() {
       })
 
     return () => controller.abort()
-  }, [userId, cards])
+    // cards の中身（所持数など）が変わってもパック構成が同じなら再取得しない
+  }, [userId, officialDataKey])
 
   useEffect(() => {
     if (!userId) return

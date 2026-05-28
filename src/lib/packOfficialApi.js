@@ -3,7 +3,6 @@ import { packCatalog } from '../data/packCatalog.js'
 import {
   dominantSetPrefix,
   fetchNeuronPackList,
-  fetchNeuronPackRarities,
   fetchNeuronPackTotals,
   neuronPackPageUrl,
   resolveNeuronEntry,
@@ -12,11 +11,11 @@ import {
   fetchProdeckSetIndex,
   fetchProdeckSetInfoTotals,
   fetchProdeckSetList,
-  fetchRarityTotalsBySetCode,
   lookupProdeckByCode,
   lookupProdeckByName,
   lookupProdeckSetMeta,
 } from './prodeckPackApi.js'
+import { loadOfficialRarityByPack } from './packRarityLoader.js'
 import { resolveCanonicalPackName } from './packTotalsStorage.js'
 
 /** 収録一覧ページ（キーワード検索ではない） */
@@ -77,9 +76,8 @@ export async function loadOfficialPackData(cards, signal) {
   }
 
   const prefixes = [...new Set([...setMetaByPack.values()].map((m) => m.setCode))]
-  const setMetas = [...setMetaByPack.values()]
 
-  const [neuronTotals, prodeckSetInfo, rarityBySetCode] = await Promise.all([
+  const [neuronTotals, prodeckSetInfo, rarityResult] = await Promise.all([
     fetchNeuronPackTotals(
       [...entryByPack.values()].map((e) => e.pid),
       neuronList,
@@ -89,41 +87,20 @@ export async function loadOfficialPackData(cards, signal) {
       return new Map()
     }),
     fetchProdeckSetInfoTotals([...prefixes], signal).catch(() => new Map()),
-    fetchRarityTotalsBySetCode(setMetas, signal).catch(() => new Map()),
+    loadOfficialRarityByPack(
+      packKeys,
+      cards,
+      entryByPack,
+      setMetaByPack,
+      prodeckSetList,
+      signal,
+    ).catch((e) => {
+      if (e.name !== 'AbortError') errors.push(e.message)
+      return { officialRarityByPack: new Map(), raritySourceByPack: new Map() }
+    }),
   ])
 
-  const officialRarityByPack = new Map()
-  const raritySourceByPack = new Map()
-
-  for (const pack of packKeys) {
-    const meta = setMetaByPack.get(pack)
-    if (meta?.setCode && rarityBySetCode.has(meta.setCode)) {
-      officialRarityByPack.set(pack, rarityBySetCode.get(meta.setCode))
-      raritySourceByPack.set(pack, 'prodeck')
-    }
-  }
-
-  const neuronPidsNeeded = packKeys
-    .filter((pack) => !officialRarityByPack.has(pack))
-    .map((pack) => entryByPack.get(pack)?.pid)
-    .filter(Boolean)
-
-  const neuronRarityByPid = await fetchNeuronPackRarities(
-    neuronPidsNeeded,
-    neuronList,
-    signal,
-  ).catch((e) => {
-    if (e.name !== 'AbortError') errors.push(e.message)
-    return new Map()
-  })
-
-  for (const pack of packKeys) {
-    if (officialRarityByPack.has(pack)) continue
-    const pid = entryByPack.get(pack)?.pid
-    if (!pid || !neuronRarityByPid.has(pid)) continue
-    officialRarityByPack.set(pack, neuronRarityByPid.get(pid))
-    raritySourceByPack.set(pack, 'neuron')
-  }
+  const { officialRarityByPack, raritySourceByPack } = rarityResult
 
   return {
     neuronList,
