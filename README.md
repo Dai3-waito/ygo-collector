@@ -116,4 +116,14 @@ npm run dev
 
 環境変数を追加したあと、Vercel で **Redeploy** しないと反映されません（ビルド時に埋め込まれるため）。
 
+## Supabase — フォルダ機能（カード追加エラー時）
+
+SQL Editor で次を実行:
+
+```sql
+alter table user_cards add column if not exists folder text default '';
+```
+
+（`supabase/migration-folder.sql` と同じ）
+
 パスワード再設定メールのリンクが動くようにします。

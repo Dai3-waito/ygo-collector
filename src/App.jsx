@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import AddCardForm from './components/AddCardForm.jsx'
 import AuthPanel from './components/AuthPanel.jsx'
+import FolderBar from './components/FolderBar.jsx'
 import ProfileModal from './components/ProfileModal.jsx'
 import ResetPasswordPanel from './components/ResetPasswordPanel.jsx'
 import {
@@ -9,24 +11,15 @@ import {
   upsertUserCard,
 } from './lib/cardsApi.js'
 import { packTotals } from './data/packTotals.js'
+import { MAX_COLLECTION_SIZE } from './lib/constants.js'
+import {
+  addFolderName,
+  DEFAULT_FOLDER,
+  loadFolders,
+  saveFolders,
+} from './lib/foldersStorage.js'
+import { normalizeForSearch } from './lib/searchUtils.js'
 import { supabase } from './lib/supabase.js'
-
-function kataToHira(input) {
-  return Array.from(input, (ch) => {
-    const code = ch.charCodeAt(0)
-    if (code >= 0x30a1 && code <= 0x30f6) return String.fromCharCode(code - 0x60)
-    return ch
-  }).join('')
-}
-
-function normalizeForSearch(input) {
-  return kataToHira(String(input ?? ''))
-    .normalize('NFKC')
-    .toLowerCase()
-    .trim()
-    .replace(/[-－ー・/]/g, ' ')
-    .replace(/\s+/g, ' ')
-}
 
 function getRarityTheme(rarity) {
   const r = String(rarity ?? '')
@@ -45,17 +38,6 @@ function getRarityTheme(rarity) {
   return 'from-zinc-600/35 via-zinc-500/20 to-zinc-700/30'
 }
 
-const emptyNewCard = {
-  id: '',
-  name: '',
-  pack: '',
-  rarity: 'シークレットレア',
-  imageUrl: '',
-  owned: 1,
-  location: '',
-  collectionType: '初版',
-}
-
 function App() {
   const [session, setSession] = useState(null)
   const [cards, setCards] = useState([])
@@ -68,11 +50,12 @@ function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [showAddForm, setShowAddForm] = useState(false)
-  const [newCard, setNewCard] = useState(emptyNewCard)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [showProfile, setShowProfile] = useState(false)
   const [recoveryMode, setRecoveryMode] = useState(false)
   const [authReady, setAuthReady] = useState(false)
+  const [folders, setFolders] = useState([DEFAULT_FOLDER])
+  const [activeFolder, setActiveFolder] = useState('all')
   const fileInputRef = useRef(null)
 
   const userId = session?.user?.id
@@ -96,10 +79,18 @@ function App() {
   useEffect(() => {
     if (!userId) {
       setCards([])
+      setFolders([DEFAULT_FOLDER])
       return
     }
+    setFolders(loadFolders(userId))
     loadUserCards(userId)
   }, [userId])
+
+  function mergeFoldersFromCards(list, uid) {
+    const fromCards = list.map((c) => c.folder).filter(Boolean)
+    const merged = saveFolders(uid, [...loadFolders(uid), ...fromCards])
+    setFolders(merged)
+  }
 
   useEffect(() => {
     if (!userId) return
@@ -134,6 +125,7 @@ function App() {
         setSaveMessage(`${list.length} 件のカードを読み込みました`)
       }
       setCards(list)
+      mergeFoldersFromCards(list, uid)
     } catch (error) {
       setSaveMessage(`読込エラー: ${error.message}`)
     } finally {
@@ -141,12 +133,19 @@ function App() {
     }
   }
 
-  async function saveCard(card) {
+  async function saveCard(card, { message } = {}) {
     if (!userId) return false
     setIsSaving(true)
     try {
-      await upsertUserCard(card, userId)
-      setSaveMessage(`${card.name} を保存しました`)
+      const meta = await upsertUserCard(card, userId)
+      if (meta?.folderLocalOnly) {
+        setSaveMessage(
+          message ??
+            '保存しました（フォルダはこの端末のみ。Supabase で migration-folder.sql を実行すると同期されます）',
+        )
+      } else {
+        setSaveMessage(message ?? `${card.name} を保存しました`)
+      }
       return true
     } catch (error) {
       setSaveMessage(`保存エラー: ${error.message}`)
@@ -172,33 +171,49 @@ function App() {
     await saveCard(updated)
   }
 
-  async function handleAddCard(e) {
-    e.preventDefault()
-    if (!userId) return
-    if (!newCard.id.trim() || !newCard.name.trim()) {
-      setSaveMessage('型番とカード名は必須です')
-      return
+  async function updateFolder(cardId, folder) {
+    const card = cards.find((c) => c.id === cardId)
+    if (!card) return
+    const nextFolder = folder.trim() || DEFAULT_FOLDER
+    const updated = { ...card, folder: nextFolder }
+    setCards((prev) => prev.map((c) => (c.id === cardId ? updated : c)))
+    if (userId) {
+      const merged = saveFolders(userId, [...folders, nextFolder])
+      setFolders(merged)
     }
-    if (cards.some((c) => c.id === newCard.id.trim())) {
-      setSaveMessage('同じ型番のカードが既にあります')
-      return
-    }
+    await saveCard(updated, { message: 'フォルダを更新しました' })
+  }
 
-    const card = {
-      ...newCard,
-      id: newCard.id.trim(),
-      name: newCard.name.trim(),
-      imageUrl: newCard.imageUrl.trim() || `/cards/${newCard.id.trim()}.jpg`,
-      owned: Number(newCard.owned) || 0,
+  function handleAddFolder(name) {
+    if (!userId) return
+    const merged = addFolderName(userId, name)
+    setFolders(merged)
+    setSaveMessage(`フォルダ「${name}」を作成しました`)
+  }
+
+  async function handleAddCard(card) {
+    if (!userId) return
+    if (cards.length >= MAX_COLLECTION_SIZE) {
+      setSaveMessage(`コレクション上限（${MAX_COLLECTION_SIZE}件）に達しています`)
+      return
+    }
+    if (cards.some((c) => c.id === card.id)) {
+      setSaveMessage('この収録（型番）は既にコレクションにあります')
+      return
     }
 
     setIsSaving(true)
     try {
-      await upsertUserCard(card, userId)
+      const meta = await upsertUserCard(card, userId)
       setCards((prev) => [...prev, card])
-      setNewCard(emptyNewCard)
       setShowAddForm(false)
-      setSaveMessage(`${card.name} を追加しました`)
+      if (meta?.folderLocalOnly) {
+        setSaveMessage(
+          `${card.name} を追加しました（フォルダは端末のみ保存。Supabase で migration-folder.sql を実行してください）`,
+        )
+      } else {
+        setSaveMessage(`${card.name} を追加しました`)
+      }
     } catch (error) {
       setSaveMessage(`追加エラー: ${error.message}`)
     } finally {
@@ -267,9 +282,23 @@ function App() {
     }),
   )
 
-  const filteredCards = cards.filter((card) => {
+  const folderFilteredCards = useMemo(() => {
+    if (activeFolder === 'all') return cards
+    return cards.filter((c) => (c.folder || DEFAULT_FOLDER) === activeFolder)
+  }, [cards, activeFolder])
+
+  const folderCounts = useMemo(() => {
+    const counts = { all: cards.length }
+    for (const card of cards) {
+      const key = card.folder || DEFAULT_FOLDER
+      counts[key] = (counts[key] ?? 0) + 1
+    }
+    return counts
+  }, [cards])
+
+  const filteredCards = folderFilteredCards.filter((card) => {
     if (queryTokens.length === 0) return true
-    const haystack = normalizeForSearch([card.name, card.pack, card.id].join(' '))
+    const haystack = normalizeForSearch([card.name, card.pack, card.id, card.folder].join(' '))
     return queryTokens.every((token) => haystack.includes(token))
   })
 
@@ -369,68 +398,22 @@ function App() {
         </section>
 
         {showAddForm ? (
-          <form
-            onSubmit={handleAddCard}
-            className="mb-6 grid gap-3 rounded-2xl border border-amber-300/20 bg-zinc-900/70 p-4 md:grid-cols-2"
-          >
-            <input
-              placeholder="型番（例: QCCU-JP099）"
-              value={newCard.id}
-              onChange={(e) => setNewCard({ ...newCard, id: e.target.value })}
-              className="rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm"
-              required
-            />
-            <input
-              placeholder="カード名"
-              value={newCard.name}
-              onChange={(e) => setNewCard({ ...newCard, name: e.target.value })}
-              className="rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm"
-              required
-            />
-            <input
-              placeholder="パック名"
-              value={newCard.pack}
-              onChange={(e) => setNewCard({ ...newCard, pack: e.target.value })}
-              className="rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm"
-            />
-            <input
-              placeholder="レアリティ"
-              value={newCard.rarity}
-              onChange={(e) => setNewCard({ ...newCard, rarity: e.target.value })}
-              className="rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm"
-            />
-            <input
-              placeholder="収納場所"
-              value={newCard.location}
-              onChange={(e) => setNewCard({ ...newCard, location: e.target.value })}
-              className="rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm"
-            />
-            <select
-              value={newCard.collectionType}
-              onChange={(e) => setNewCard({ ...newCard, collectionType: e.target.value })}
-              className="rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm"
-            >
-              <option value="初版">初版</option>
-              <option value="再録">再録</option>
-              <option value="25th">25th</option>
-            </select>
-            <input
-              type="number"
-              min={0}
-              placeholder="所持数"
-              value={newCard.owned}
-              onChange={(e) => setNewCard({ ...newCard, owned: Number(e.target.value) })}
-              className="rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm"
-            />
-            <button
-              type="submit"
-              disabled={isSaving}
-              className="rounded-lg border border-amber-300/40 bg-amber-300/15 py-2 text-sm text-amber-100 md:col-span-2"
-            >
-              カードを追加して保存
-            </button>
-          </form>
+          <AddCardForm
+            ownedCards={cards}
+            folders={folders}
+            collectionCount={cards.length}
+            onAdd={handleAddCard}
+            isSaving={isSaving}
+          />
         ) : null}
+
+        <FolderBar
+          folders={folders}
+          activeFolder={activeFolder}
+          onSelectFolder={setActiveFolder}
+          onAddFolder={handleAddFolder}
+          cardCounts={folderCounts}
+        />
 
         <section className="mb-6 grid gap-3 md:grid-cols-[1fr_220px]">
           <input
@@ -519,6 +502,22 @@ function App() {
                       <span className="rounded-full border border-zinc-700 bg-zinc-950/50 px-2.5 py-1 text-xs text-zinc-300">
                         {card.collectionType}
                       </span>
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-[11px] text-zinc-400">フォルダ</label>
+                      <select
+                        value={card.folder || DEFAULT_FOLDER}
+                        onChange={(e) => updateFolder(card.id, e.target.value)}
+                        disabled={isSaving}
+                        className="w-full rounded-lg border border-amber-300/25 bg-zinc-950/60 px-2 py-1.5 text-xs text-zinc-100 outline-none focus:border-amber-300"
+                      >
+                        {folders.map((f) => (
+                          <option key={f} value={f}>
+                            {f}
+                          </option>
+                        ))}
+                      </select>
                     </div>
 
                     <div>

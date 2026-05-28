@@ -5,19 +5,27 @@ import {
   MIN_SEARCH_LENGTH,
 } from '../lib/constants.js'
 import { DEFAULT_FOLDER } from '../lib/foldersStorage.js'
+import { detectImageLangFromQuery, IMAGE_LANG_OPTIONS } from '../lib/imageLang.js'
+import { fetchCardPrints } from '../lib/ygoPrints.js'
 import { cardImageUrl, searchYgoCardsJa } from '../lib/ygoCdb.js'
 
-function catalogToNewCard(entry, folder) {
+function printKey(print) {
+  return `${print.setCode}|${print.rarity}`
+}
+
+function buildCardFromSelection(entry, print, folder, imageLang) {
+  const cardId = print?.setCode ?? entry.passcode
   return {
-    id: entry.id,
+    id: cardId,
     name: entry.name,
-    pack: entry.pack,
-    rarity: entry.rarity,
-    imageUrl: entry.imageUrl || cardImageUrl(entry.passcode, 'full'),
+    pack: print?.setName ?? entry.pack,
+    rarity: print?.rarity ?? '',
+    imageUrl: cardImageUrl(entry.passcode, { lang: imageLang, size: 'full' }),
     owned: 1,
     location: '',
     collectionType: '初版',
     folder: folder || DEFAULT_FOLDER,
+    passcode: entry.passcode,
   }
 }
 
@@ -29,11 +37,14 @@ export default function AddCardForm({
   isSaving,
 }) {
   const [search, setSearch] = useState('')
+  const [imageLang, setImageLang] = useState('jp')
   const [results, setResults] = useState([])
-  const [selectedId, setSelectedId] = useState('')
+  const [selectedPasscode, setSelectedPasscode] = useState('')
+  const [prints, setPrints] = useState([])
+  const [selectedPrintKey, setSelectedPrintKey] = useState('')
+  const [loadingPrints, setLoadingPrints] = useState(false)
   const [owned, setOwned] = useState(1)
   const [location, setLocation] = useState('')
-  const [collectionType, setCollectionType] = useState('初版')
   const [folder, setFolder] = useState(DEFAULT_FOLDER)
   const [isSearching, setIsSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
@@ -41,12 +52,25 @@ export default function AddCardForm({
   const ownedIds = useMemo(() => new Set(ownedCards.map((c) => c.id)), [ownedCards])
   const atCollectionLimit = collectionCount >= MAX_COLLECTION_SIZE
 
-  const displayResults = useMemo(
-    () => results.filter((r) => !ownedIds.has(r.id)).slice(0, MAX_SEARCH_RESULTS),
-    [results, ownedIds],
-  )
+  const selectedEntry = results.find((r) => r.passcode === selectedPasscode)
+  const selectedPrint = prints.find((p) => printKey(p) === selectedPrintKey)
 
-  const selectedEntry = results.find((r) => r.id === selectedId)
+  const previewCard = selectedEntry
+    ? buildCardFromSelection(selectedEntry, selectedPrint ?? prints[0], folder, imageLang)
+    : null
+
+  const displayResults = useMemo(() => {
+    return results
+      .filter((r) => {
+        if (ownedIds.has(r.passcode)) return false
+        return true
+      })
+      .slice(0, MAX_SEARCH_RESULTS)
+  }, [results, ownedIds])
+
+  useEffect(() => {
+    setImageLang(detectImageLangFromQuery(search))
+  }, [search])
 
   useEffect(() => {
     const q = search.trim()
@@ -65,6 +89,7 @@ export default function AddCardForm({
         const found = await searchYgoCardsJa(q, {
           maxResults: MAX_SEARCH_RESULTS,
           signal: controller.signal,
+          imageLang,
         })
         setResults(found)
         if (found.length === 0) {
@@ -83,10 +108,37 @@ export default function AddCardForm({
       clearTimeout(timer)
       controller.abort()
     }
-  }, [search])
+  }, [search, imageLang])
+
+  useEffect(() => {
+    if (!selectedPasscode) {
+      setPrints([])
+      setSelectedPrintKey('')
+      return
+    }
+
+    const controller = new AbortController()
+    setLoadingPrints(true)
+    fetchCardPrints(selectedPasscode, controller.signal)
+      .then((list) => {
+        setPrints(list)
+        if (list.length > 0) setSelectedPrintKey(printKey(list[0]))
+        else setSelectedPrintKey('')
+      })
+      .catch((error) => {
+        if (error.name === 'AbortError') return
+        setPrints([])
+        setSelectedPrintKey('')
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoadingPrints(false)
+      })
+
+    return () => controller.abort()
+  }, [selectedPasscode])
 
   function handleSelect(card) {
-    setSelectedId(card.id)
+    setSelectedPasscode(card.passcode)
     setOwned(1)
     setLocation('')
   }
@@ -94,11 +146,23 @@ export default function AddCardForm({
   function handleSubmit(e) {
     e.preventDefault()
     if (!selectedEntry || atCollectionLimit) return
+
+    const card = buildCardFromSelection(
+      selectedEntry,
+      selectedPrint ?? prints[0],
+      folder,
+      imageLang,
+    )
+
+    if (ownedIds.has(card.id)) {
+      setSearchError(`「${card.id}」は既にコレクションにあります。別のレアリティを選んでください。`)
+      return
+    }
+
     onAdd({
-      ...catalogToNewCard(selectedEntry, folder),
+      ...card,
       owned: Number(owned) || 0,
       location: location.trim(),
-      collectionType,
     })
   }
 
@@ -123,16 +187,32 @@ export default function AddCardForm({
         登録数: {collectionCount} / {MAX_COLLECTION_SIZE}
       </p>
 
-      <input
-        type="text"
-        placeholder="例: 青眼の白龍 / 灰流うらら / 89631139"
-        value={search}
-        onChange={(e) => {
-          setSearch(e.target.value)
-          setSelectedId('')
-        }}
-        className="mt-3 w-full rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-300"
-      />
+      <div className="mt-3 flex flex-wrap gap-3">
+        <input
+          type="text"
+          placeholder="例: 青眼の白龍 / 灰流うらら / 89631139"
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value)
+            setSelectedPasscode('')
+          }}
+          className="min-w-[200px] flex-1 rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-300"
+        />
+        <label className="flex items-center gap-2 text-xs text-zinc-300">
+          カード画像
+          <select
+            value={imageLang}
+            onChange={(e) => setImageLang(e.target.value)}
+            className="rounded-lg border border-amber-300/30 bg-zinc-950/80 px-2 py-2 text-sm text-zinc-100"
+          >
+            {IMAGE_LANG_OPTIONS.map((opt) => (
+              <option key={opt.code} value={opt.code}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
 
       {isSearching ? (
         <p className="mt-2 text-xs text-amber-300/80">検索中...</p>
@@ -142,9 +222,6 @@ export default function AddCardForm({
       {search.trim().length >= MIN_SEARCH_LENGTH ? (
         <p className="mt-2 text-xs text-zinc-400">
           {isSearching ? '…' : `${displayResults.length} 件表示`}
-          {results.length > displayResults.length
-            ? `（${results.length - displayResults.length} 件は登録済みのため非表示）`
-            : ''}
         </p>
       ) : null}
 
@@ -155,20 +232,19 @@ export default function AddCardForm({
           </p>
         ) : displayResults.length === 0 && !isSearching ? (
           <p className="px-2 py-8 text-center text-xs text-zinc-500">
-            {results.length > 0
-              ? '該当カードはすべてコレクションに登録済みです'
-              : '表示できる結果がありません'}
+            表示できる結果がありません
           </p>
         ) : (
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
             {displayResults.map((card) => {
-              const isSelected = card.id === selectedId
+              const isSelected = card.passcode === selectedPasscode
+              const imgSrc = cardImageUrl(card.passcode, { lang: imageLang, size: 'half' })
               return (
                 <button
-                  key={card.id}
+                  key={`${card.passcode}-${card.cid}`}
                   type="button"
                   onClick={() => handleSelect(card)}
-                  className={`group flex flex-col overflow-hidden rounded-lg border text-left transition ${
+                  className={`flex flex-col overflow-hidden rounded-lg border text-left transition ${
                     isSelected
                       ? 'border-amber-300/60 bg-amber-300/15 ring-2 ring-amber-300/50'
                       : 'border-zinc-700/80 bg-zinc-900/50 hover:border-amber-300/30 hover:bg-zinc-800/80'
@@ -176,7 +252,7 @@ export default function AddCardForm({
                 >
                   <div className="relative aspect-[59/86] w-full overflow-hidden bg-zinc-800">
                     <img
-                      src={card.imageUrl}
+                      src={imgSrc}
                       alt={card.name}
                       loading="lazy"
                       className="h-full w-full object-cover object-top"
@@ -196,64 +272,88 @@ export default function AddCardForm({
       </div>
 
       {selectedEntry ? (
-        <div className="mt-4 grid gap-3 rounded-lg border border-amber-300/15 bg-zinc-950/50 p-3 md:grid-cols-2">
-          <div className="flex gap-3 md:col-span-2">
-            <img
-              src={cardImageUrl(selectedEntry.passcode, 'half')}
-              alt={selectedEntry.name}
-              className="h-36 w-[5.5rem] shrink-0 rounded object-cover object-top shadow-lg"
-            />
-            <div className="min-w-0">
+        <div className="mt-4 space-y-3 rounded-lg border border-amber-300/15 bg-zinc-950/50 p-3">
+          <div className="flex gap-3">
+            {previewCard ? (
+              <img
+                src={cardImageUrl(selectedEntry.passcode, { lang: imageLang, size: 'half' })}
+                alt={selectedEntry.name}
+                className="h-36 w-[5.5rem] shrink-0 rounded object-cover object-top shadow-lg"
+              />
+            ) : null}
+            <div className="min-w-0 flex-1">
               <p className="text-xs text-zinc-500">選択中</p>
               <p className="font-medium text-amber-100">{selectedEntry.name}</p>
               {selectedEntry.nameEn ? (
                 <p className="text-xs text-zinc-400">{selectedEntry.nameEn}</p>
               ) : null}
               <p className="mt-1 text-xs text-zinc-500">パスワード: {selectedEntry.passcode}</p>
-              {selectedEntry.pack ? (
-                <p className="mt-1 text-xs text-zinc-500">{selectedEntry.pack}</p>
-              ) : null}
             </div>
           </div>
-          <label className="text-sm text-zinc-300">
-            フォルダ
+
+          <label className="block text-sm text-zinc-300">
+            レアリティ・収録（このカードに存在するものだけ）
+            {loadingPrints ? (
+              <span className="ml-2 text-xs text-amber-300/80">読込中...</span>
+            ) : null}
             <select
-              value={folder}
-              onChange={(e) => setFolder(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100"
+              value={selectedPrintKey}
+              onChange={(e) => setSelectedPrintKey(e.target.value)}
+              disabled={prints.length === 0}
+              className="mt-1 w-full rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100 disabled:opacity-50"
             >
-              {folders.map((f) => (
-                <option key={f} value={f}>
-                  {f}
-                </option>
-              ))}
+              {prints.length === 0 ? (
+                <option value="">レアリティ情報なし（パスワードで登録）</option>
+              ) : (
+                prints.map((p) => (
+                  <option key={printKey(p)} value={printKey(p)}>
+                    {p.rarity}
+                    {p.isJp ? ' [JP]' : ''} — {p.setCode}
+                    {p.setName ? ` (${p.setName})` : ''}
+                  </option>
+                ))
+              )}
             </select>
           </label>
-          <input
-            placeholder="収納場所（任意）"
-            value={location}
-            onChange={(e) => setLocation(e.target.value)}
-            className="rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100"
-          />
-          <select
-            value={collectionType}
-            onChange={(e) => setCollectionType(e.target.value)}
-            className="rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100"
-          >
-            <option value="初版">初版</option>
-            <option value="再録">再録</option>
-            <option value="25th">25th</option>
-          </select>
-          <label className="flex items-center gap-2 text-sm text-zinc-300">
-            所持数
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="text-sm text-zinc-300">
+              フォルダ
+              <select
+                value={folder}
+                onChange={(e) => setFolder(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100"
+              >
+                {folders.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            </label>
             <input
-              type="number"
-              min={0}
-              value={owned}
-              onChange={(e) => setOwned(Number(e.target.value))}
-              className="w-24 rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100"
+              placeholder="収納場所（任意）"
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              className="rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100"
             />
-          </label>
+            <label className="flex items-center gap-2 text-sm text-zinc-300 md:col-span-2">
+              所持数
+              <input
+                type="number"
+                min={0}
+                value={owned}
+                onChange={(e) => setOwned(Number(e.target.value))}
+                className="w-24 rounded-lg border border-amber-300/30 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100"
+              />
+            </label>
+          </div>
+          {previewCard ? (
+            <p className="text-xs text-zinc-500">
+              登録 ID: <span className="text-amber-200/90">{previewCard.id}</span>
+              {previewCard.rarity ? ` / ${previewCard.rarity}` : ''}
+            </p>
+          ) : null}
         </div>
       ) : (
         <p className="mt-3 text-xs text-zinc-500">画像をタップして選択してください</p>
@@ -261,7 +361,7 @@ export default function AddCardForm({
 
       <button
         type="submit"
-        disabled={isSaving || !selectedEntry}
+        disabled={isSaving || !selectedEntry || loadingPrints}
         className="mt-4 w-full rounded-lg border border-amber-300/40 bg-amber-300/15 py-2 text-sm text-amber-100 disabled:opacity-40"
       >
         {isSaving ? '保存中...' : 'カードを追加して保存'}

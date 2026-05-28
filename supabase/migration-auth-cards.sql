@@ -6,6 +6,7 @@ alter table user_cards add column if not exists name text;
 alter table user_cards add column if not exists pack text;
 alter table user_cards add column if not exists rarity text;
 alter table user_cards add column if not exists image_url text;
+alter table user_cards add column if not exists folder text default '';
 
 alter table user_cards drop constraint if exists user_cards_card_id_key;
 

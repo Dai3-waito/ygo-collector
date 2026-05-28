@@ -18,6 +18,14 @@ export default defineConfig({
           return `/api/v0/?search=${encodeURIComponent(search)}&start=${start}`
         },
       },
+      '/api/ygo-prints': {
+        target: 'https://db.ygoprodeck.com',
+        changeOrigin: true,
+        rewrite: (path) => {
+          const query = path.includes('?') ? path.slice(path.indexOf('?')) : ''
+          return `/api/v7/cardinfo.php${query}`
+        },
+      },
     },
   },
 })

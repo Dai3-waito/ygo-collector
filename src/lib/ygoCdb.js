@@ -3,15 +3,24 @@ import { MAX_SEARCH_RESULTS } from './constants.js'
 /** 開発: Vite proxy / 本番: Vercel api/ygo-search.js */
 const SEARCH_API = '/api/ygo-search'
 
-/** @see https://ygocdb.com/api */
-export function cardImageUrl(passcode, size = 'half') {
+/**
+ * @param {'jp'|'en'|'sc'|'ygopro'} lang
+ * @param {'thumb'|'half'|'full'} size
+ */
+export function cardImageUrl(passcode, { lang = 'jp', size = 'half' } = {}) {
   const id = String(passcode)
   const suffix =
-    size === 'thumb' ? '!thumb2' : size === 'full' ? '' : '!half'
-  return `https://cdn.233.momobako.com/ygopro/pics/${id}.jpg${suffix}`
+    size === 'thumb' ? '!thumb2' : size === 'half' ? '!half' : ''
+
+  if (lang === 'ygopro') {
+    return `https://cdn.233.momobako.com/ygopro/pics/${id}.jpg${suffix}`
+  }
+
+  const webpLang = lang === 'jp' ? 'jp' : lang === 'sc' ? 'sc' : 'en'
+  return `https://cdn.233.momobako.com/ygoimg/${webpLang}/${id}.webp${suffix}`
 }
 
-export function cdbItemToCatalog(item) {
+export function cdbItemToCatalog(item, imageLang = 'jp') {
   const passcode = String(item.id)
   const typeLine = item.text?.types ?? ''
   return {
@@ -20,10 +29,11 @@ export function cdbItemToCatalog(item) {
     nameEn: item.en_name ?? '',
     pack: typeLine.split('\n')[0]?.trim() || '',
     rarity: '',
-    imageUrl: cardImageUrl(passcode, 'half'),
-    imageThumb: cardImageUrl(passcode, 'thumb'),
+    imageUrl: cardImageUrl(passcode, { lang: imageLang, size: 'half' }),
+    imageThumb: cardImageUrl(passcode, { lang: imageLang, size: 'thumb' }),
     passcode,
     cid: item.cid,
+    imageLang,
   }
 }
 
@@ -59,7 +69,10 @@ async function fetchSearchPage(query, start, signal) {
 /**
  * 百鸽 ygocdb — 日本語名・効果テキストで検索
  */
-export async function searchYgoCardsJa(query, { maxResults = MAX_SEARCH_RESULTS, signal } = {}) {
+export async function searchYgoCardsJa(
+  query,
+  { maxResults = MAX_SEARCH_RESULTS, signal, imageLang = 'jp' } = {},
+) {
   const trimmed = query.trim()
   if (!trimmed) return []
 
@@ -72,7 +85,7 @@ export async function searchYgoCardsJa(query, { maxResults = MAX_SEARCH_RESULTS,
     if (items.length === 0) break
 
     for (const item of items) {
-      results.push(cdbItemToCatalog(item))
+      results.push(cdbItemToCatalog(item, imageLang))
       if (results.length >= maxResults) return results
     }
 

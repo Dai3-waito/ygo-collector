@@ -1,7 +1,15 @@
 import { cards as masterCards } from '../data/cards.js'
+import { getCardFolder, isFolderColumnError, setCardFolder } from './cardFoldersLocal.js'
+import { DEFAULT_FOLDER } from './foldersStorage.js'
 import { supabase } from './supabase.js'
 
-export function rowToCard(row) {
+export function rowToCard(row, userId) {
+  const folderFromDb = row.folder?.trim()
+  const folder =
+    folderFromDb ||
+    (userId ? getCardFolder(userId, row.card_id) : null) ||
+    DEFAULT_FOLDER
+
   return {
     id: row.card_id,
     name: row.name ?? row.card_id,
@@ -11,11 +19,12 @@ export function rowToCard(row) {
     owned: row.owned ?? 0,
     location: row.location ?? '',
     collectionType: row.collection_type ?? '初版',
+    folder,
   }
 }
 
-export function cardToRow(card, userId) {
-  return {
+export function cardToRow(card, userId, { includeFolder = true } = {}) {
+  const row = {
     user_id: userId,
     card_id: card.id,
     name: card.name,
@@ -27,6 +36,10 @@ export function cardToRow(card, userId) {
     collection_type: card.collectionType,
     updated_at: new Date().toISOString(),
   }
+  if (includeFolder) {
+    row.folder = card.folder?.trim() || DEFAULT_FOLDER
+  }
+  return row
 }
 
 export async function fetchUserCards(userId) {
@@ -37,7 +50,7 @@ export async function fetchUserCards(userId) {
     .order('card_id')
 
   if (error) throw error
-  return (data ?? []).map(rowToCard)
+  return (data ?? []).map((row) => rowToCard(row, userId))
 }
 
 export async function seedUserCards(userId) {
@@ -48,10 +61,23 @@ export async function seedUserCards(userId) {
 }
 
 export async function upsertUserCard(card, userId) {
-  const { error } = await supabase.from('user_cards').upsert(cardToRow(card, userId), {
+  const folder = card.folder?.trim() || DEFAULT_FOLDER
+  let { error } = await supabase.from('user_cards').upsert(cardToRow(card, userId), {
     onConflict: 'user_id,card_id',
   })
+
+  if (error && isFolderColumnError(error)) {
+    setCardFolder(userId, card.id, folder)
+    ;({ error } = await supabase.from('user_cards').upsert(cardToRow(card, userId, { includeFolder: false }), {
+      onConflict: 'user_id,card_id',
+    }))
+    if (error) throw error
+    return { folderLocalOnly: true }
+  }
+
   if (error) throw error
+  setCardFolder(userId, card.id, folder)
+  return {}
 }
 
 export async function deleteUserCard(userId, cardId) {
