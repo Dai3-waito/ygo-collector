@@ -5,8 +5,7 @@ import {
   MIN_SEARCH_LENGTH,
 } from '../lib/constants.js'
 import { DEFAULT_FOLDER } from '../lib/foldersStorage.js'
-import { normalizeForSearch } from '../lib/searchUtils.js'
-import { searchYgoCards } from '../lib/ygoProDeck.js'
+import { cardImageUrl, searchYgoCardsJa } from '../lib/ygoCdb.js'
 
 function catalogToNewCard(entry, folder) {
   return {
@@ -14,7 +13,7 @@ function catalogToNewCard(entry, folder) {
     name: entry.name,
     pack: entry.pack,
     rarity: entry.rarity,
-    imageUrl: entry.imageUrl || `/cards/${entry.id}.jpg`,
+    imageUrl: entry.imageUrl || cardImageUrl(entry.passcode, 'full'),
     owned: 1,
     location: '',
     collectionType: '初版',
@@ -42,23 +41,11 @@ export default function AddCardForm({
   const ownedIds = useMemo(() => new Set(ownedCards.map((c) => c.id)), [ownedCards])
   const atCollectionLimit = collectionCount >= MAX_COLLECTION_SIZE
 
-  const availableResults = useMemo(
-    () => results.filter((r) => !ownedIds.has(r.id)),
+  const displayResults = useMemo(
+    () => results.filter((r) => !ownedIds.has(r.id)).slice(0, MAX_SEARCH_RESULTS),
     [results, ownedIds],
   )
 
-  const filteredResults = useMemo(() => {
-    const tokens = normalizeForSearch(search).split(' ').filter(Boolean)
-    if (tokens.length === 0) return availableResults
-    return availableResults.filter((card) => {
-      const haystack = normalizeForSearch(
-        [card.name, card.pack, card.id, card.rarity, card.passcode].join(' '),
-      )
-      return tokens.every((token) => haystack.includes(token))
-    })
-  }, [availableResults, search])
-
-  const displayResults = filteredResults.slice(0, MAX_SEARCH_RESULTS)
   const selectedEntry = results.find((r) => r.id === selectedId)
 
   useEffect(() => {
@@ -75,15 +62,13 @@ export default function AddCardForm({
       setIsSearching(true)
       setSearchError('')
       try {
-        const found = await searchYgoCards(q, {
+        const found = await searchYgoCardsJa(q, {
           maxResults: MAX_SEARCH_RESULTS,
           signal: controller.signal,
         })
         setResults(found)
         if (found.length === 0) {
-          setSearchError(
-            '該当するカードが見つかりませんでした。英語名（例: Blue-Eyes）や型番（例: LEDE-JP045）でも検索してください。',
-          )
+          setSearchError('該当するカードが見つかりませんでした。別のキーワードで試してください。')
         }
       } catch (error) {
         if (error.name === 'AbortError') return
@@ -92,7 +77,7 @@ export default function AddCardForm({
       } finally {
         if (!controller.signal.aborted) setIsSearching(false)
       }
-    }, 450)
+    }, 400)
 
     return () => {
       clearTimeout(timer)
@@ -130,12 +115,9 @@ export default function AddCardForm({
       onSubmit={handleSubmit}
       className="mb-6 rounded-2xl border border-amber-300/20 bg-zinc-900/70 p-4"
     >
-      <p className="text-sm font-medium text-amber-100">遊戯王カードデータベースから選択</p>
+      <p className="text-sm font-medium text-amber-100">カードを検索して追加</p>
       <p className="mt-1 text-xs text-zinc-400">
-        カード名を{MIN_SEARCH_LENGTH}文字以上で入力（検索結果最大{MAX_SEARCH_RESULTS}件）
-      </p>
-      <p className="mt-1 text-xs text-zinc-500">
-        ヒント: 日本語名だけでは見つからないことがあります。英語名・型番でも試してください。
+        日本語名・ルビ・効果文・パスワードで検索（最大{MAX_SEARCH_RESULTS}件）
       </p>
       <p className="mt-1 text-xs text-zinc-500">
         登録数: {collectionCount} / {MAX_COLLECTION_SIZE}
@@ -143,7 +125,7 @@ export default function AddCardForm({
 
       <input
         type="text"
-        placeholder="例: 青眼 / Blue-Eyes / LEDE-JP"
+        placeholder="例: 青眼の白龍 / 灰流うらら / 89631139"
         value={search}
         onChange={(e) => {
           setSearch(e.target.value)
@@ -157,73 +139,81 @@ export default function AddCardForm({
       ) : null}
       {searchError ? <p className="mt-2 text-xs text-rose-300/90">{searchError}</p> : null}
 
-      <ul className="mt-3 max-h-72 space-y-1 overflow-y-auto rounded-lg border border-zinc-700/80 bg-zinc-950/60 p-1">
-        {search.trim().length < MIN_SEARCH_LENGTH ? (
-          <li className="px-3 py-4 text-center text-xs text-zinc-500">
-            カード名を入力して検索してください
-          </li>
-        ) : displayResults.length === 0 && !isSearching ? (
-          <li className="px-3 py-4 text-center text-xs text-zinc-500">
-            {availableResults.length === 0 && results.length > 0
-              ? '該当カードはすべてコレクションに登録済みです'
-              : '表示できる結果がありません'}
-          </li>
-        ) : (
-          displayResults.map((card) => {
-            const isSelected = card.id === selectedId
-            return (
-              <li key={card.id}>
-                <button
-                  type="button"
-                  onClick={() => handleSelect(card)}
-                  className={`flex w-full gap-3 rounded-md px-2 py-2 text-left text-sm transition ${
-                    isSelected
-                      ? 'bg-amber-300/20 ring-1 ring-amber-300/40'
-                      : 'hover:bg-zinc-800/80'
-                  }`}
-                >
-                  {card.imageUrl ? (
-                    <img
-                      src={card.imageUrl}
-                      alt=""
-                      className="h-14 w-10 shrink-0 rounded object-cover object-top"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div className="h-14 w-10 shrink-0 rounded bg-zinc-800" />
-                  )}
-                  <span className="min-w-0 flex-1">
-                    <span className="font-medium text-amber-100">{card.name}</span>
-                    <span className="mt-0.5 block text-xs text-zinc-400">
-                      {card.id}
-                      {card.rarity ? ` · ${card.rarity}` : ''}
-                    </span>
-                    <span className="block truncate text-xs text-zinc-500">{card.pack}</span>
-                  </span>
-                </button>
-              </li>
-            )
-          })
-        )}
-      </ul>
-      {filteredResults.length > MAX_SEARCH_RESULTS ? (
-        <p className="mt-1 text-xs text-zinc-500">
-          先頭 {MAX_SEARCH_RESULTS} 件を表示しています（絞り込みで検索してください）
+      {search.trim().length >= MIN_SEARCH_LENGTH ? (
+        <p className="mt-2 text-xs text-zinc-400">
+          {isSearching ? '…' : `${displayResults.length} 件表示`}
+          {results.length > displayResults.length
+            ? `（${results.length - displayResults.length} 件は登録済みのため非表示）`
+            : ''}
         </p>
       ) : null}
 
+      <div className="mt-3 max-h-[28rem] overflow-y-auto rounded-lg border border-zinc-700/80 bg-zinc-950/60 p-2">
+        {search.trim().length < MIN_SEARCH_LENGTH ? (
+          <p className="px-2 py-8 text-center text-xs text-zinc-500">
+            カード名を入力すると、画像一覧が表示されます
+          </p>
+        ) : displayResults.length === 0 && !isSearching ? (
+          <p className="px-2 py-8 text-center text-xs text-zinc-500">
+            {results.length > 0
+              ? '該当カードはすべてコレクションに登録済みです'
+              : '表示できる結果がありません'}
+          </p>
+        ) : (
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+            {displayResults.map((card) => {
+              const isSelected = card.id === selectedId
+              return (
+                <button
+                  key={card.id}
+                  type="button"
+                  onClick={() => handleSelect(card)}
+                  className={`group flex flex-col overflow-hidden rounded-lg border text-left transition ${
+                    isSelected
+                      ? 'border-amber-300/60 bg-amber-300/15 ring-2 ring-amber-300/50'
+                      : 'border-zinc-700/80 bg-zinc-900/50 hover:border-amber-300/30 hover:bg-zinc-800/80'
+                  }`}
+                >
+                  <div className="relative aspect-[59/86] w-full overflow-hidden bg-zinc-800">
+                    <img
+                      src={card.imageUrl}
+                      alt={card.name}
+                      loading="lazy"
+                      className="h-full w-full object-cover object-top"
+                    />
+                  </div>
+                  <div className="p-1.5">
+                    <p className="line-clamp-2 text-[10px] font-medium leading-tight text-amber-100">
+                      {card.name}
+                    </p>
+                    <p className="mt-0.5 truncate text-[9px] text-zinc-500">{card.passcode}</p>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
       {selectedEntry ? (
         <div className="mt-4 grid gap-3 rounded-lg border border-amber-300/15 bg-zinc-950/50 p-3 md:grid-cols-2">
-          <div className="md:col-span-2">
-            <p className="text-xs text-zinc-500">選択中</p>
-            <p className="font-medium text-amber-100">
-              {selectedEntry.name}{' '}
-              <span className="text-sm font-normal text-zinc-400">({selectedEntry.id})</span>
-            </p>
-            <p className="mt-1 text-xs text-zinc-400">
-              {selectedEntry.pack}
-              {selectedEntry.rarity ? ` · ${selectedEntry.rarity}` : ''}
-            </p>
+          <div className="flex gap-3 md:col-span-2">
+            <img
+              src={cardImageUrl(selectedEntry.passcode, 'half')}
+              alt={selectedEntry.name}
+              className="h-36 w-[5.5rem] shrink-0 rounded object-cover object-top shadow-lg"
+            />
+            <div className="min-w-0">
+              <p className="text-xs text-zinc-500">選択中</p>
+              <p className="font-medium text-amber-100">{selectedEntry.name}</p>
+              {selectedEntry.nameEn ? (
+                <p className="text-xs text-zinc-400">{selectedEntry.nameEn}</p>
+              ) : null}
+              <p className="mt-1 text-xs text-zinc-500">パスワード: {selectedEntry.passcode}</p>
+              {selectedEntry.pack ? (
+                <p className="mt-1 text-xs text-zinc-500">{selectedEntry.pack}</p>
+              ) : null}
+            </div>
           </div>
           <label className="text-sm text-zinc-300">
             フォルダ
@@ -266,7 +256,7 @@ export default function AddCardForm({
           </label>
         </div>
       ) : (
-        <p className="mt-3 text-xs text-zinc-500">検索結果からカードを選んでください</p>
+        <p className="mt-3 text-xs text-zinc-500">画像をタップして選択してください</p>
       )}
 
       <button

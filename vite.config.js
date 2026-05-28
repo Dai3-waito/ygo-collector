@@ -8,11 +8,14 @@ export default defineConfig({
   server: {
     proxy: {
       '/api/ygo-search': {
-        target: 'https://db.ygoprodeck.com',
+        target: 'https://ygocdb.com',
         changeOrigin: true,
         rewrite: (path) => {
           const query = path.includes('?') ? path.slice(path.indexOf('?')) : ''
-          return `/api/v7/cardinfo.php${query}`
+          const q = new URLSearchParams(query.replace(/^\?/, ''))
+          const search = q.get('search') ?? q.get('fname') ?? ''
+          const start = q.get('start') ?? q.get('offset') ?? '0'
+          return `/api/v0/?search=${encodeURIComponent(search)}&start=${start}`
         },
       },
     },

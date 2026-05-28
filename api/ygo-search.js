@@ -1,6 +1,6 @@
 /**
- * Vercel serverless proxy — ブラウザから YGOPRODeck へ直接 fetch すると
- * 環境によって失敗することがあるため、同一オリジン経由で中継する。
+ * 百鸽 ygocdb.com プロキシ（日本語検索・CORS 回避）
+ * @see https://ygocdb.com/api
  */
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
@@ -15,24 +15,19 @@ export default async function handler(req, res) {
     return
   }
 
-  const fname = String(req.query.fname ?? '').trim()
-  if (fname.length < 2) {
-    res.status(400).json({ error: 'fname must be at least 2 characters' })
+  const search = String(req.query.search ?? req.query.fname ?? '').trim()
+  if (search.length < 2) {
+    res.status(400).json({ error: 'search must be at least 2 characters' })
     return
   }
 
-  const params = new URLSearchParams({
-    fname,
-    num: String(req.query.num ?? '100'),
-    offset: String(req.query.offset ?? '0'),
-    misc: String(req.query.misc ?? 'yes'),
-  })
+  const start = String(req.query.start ?? req.query.offset ?? '0')
+  const params = new URLSearchParams({ search, start })
 
   try {
-    const upstream = await fetch(
-      `https://db.ygoprodeck.com/api/v7/cardinfo.php?${params}`,
-      { headers: { 'User-Agent': 'ygo-collector/1.0' } },
-    )
+    const upstream = await fetch(`https://ygocdb.com/api/v0/?${params}`, {
+      headers: { 'User-Agent': 'ygo-collector/1.0' },
+    })
     const text = await upstream.text()
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Content-Type', 'application/json')
