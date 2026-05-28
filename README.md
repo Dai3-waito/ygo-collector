@@ -1,6 +1,6 @@
 # ygo-collector
 Yu-Gi-Oh! OCG collection tracker for collectors.
-# YGO Collector
+
 
 遊戯王OCGコレクター向けの収集管理ツール。  
 「対戦管理」ではなく、**収集・所有・コンプリート体験**に特化したWebアプリです。
