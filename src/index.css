@@ -32,6 +32,34 @@ body {
   mix-blend-mode: soft-light;
 }
 
+@keyframes support-glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 18px rgba(251, 191, 36, 0.06);
+  }
+  50% {
+    box-shadow: 0 0 26px rgba(251, 191, 36, 0.14);
+  }
+}
+
+.support-btn-glow {
+  animation: support-glow-pulse 4s ease-in-out infinite;
+}
+
+.support-btn-glow:hover {
+  animation: none;
+}
+
+.support-btn-shimmer {
+  display: inline-block;
+  transition: transform 0.3s ease;
+}
+
+.group\/support:hover .support-btn-shimmer,
+.group\/support:focus-within .support-btn-shimmer {
+  transform: scale(1.08) rotate(-6deg);
+}
+
 .card-art-frame::after {
   content: '';
   position: absolute;

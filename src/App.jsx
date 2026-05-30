@@ -6,6 +6,8 @@ import FolderBar from './components/FolderBar.jsx'
 import PackCompletionPanel from './components/PackCompletionPanel.jsx'
 import ProfileModal from './components/ProfileModal.jsx'
 import ResetPasswordPanel from './components/ResetPasswordPanel.jsx'
+import SupportButton from './components/SupportButton.jsx'
+import AppFooter from './components/AppFooter.jsx'
 import { deleteUserCard, fetchUserCards, upsertUserCard } from './lib/cardsApi.js'
 import { computePackCompletionList } from './lib/packCompletion.js'
 import { loadOfficialPackData } from './lib/packOfficialApi.js'
@@ -154,20 +156,29 @@ function App() {
       const saved = localStorage.getItem(imagesStorageKey)
       if (!saved) return
       const parsed = JSON.parse(saved)
-      if (parsed && typeof parsed === 'object') setCustomImages(parsed)
+      if (!parsed || typeof parsed !== 'object') return
+      setCustomImages((prev) => {
+        const prevJson = JSON.stringify(prev)
+        const nextJson = JSON.stringify(parsed)
+        return prevJson === nextJson ? prev : parsed
+      })
     } catch {
       // ignore
     }
   }, [userId, imagesStorageKey])
 
+  const customImagesJson = useMemo(() => JSON.stringify(customImages), [customImages])
+
   useEffect(() => {
     if (!userId) return
     try {
-      localStorage.setItem(imagesStorageKey, JSON.stringify(customImages))
+      const saved = localStorage.getItem(imagesStorageKey)
+      if (saved === customImagesJson) return
+      localStorage.setItem(imagesStorageKey, customImagesJson)
     } catch {
       setSaveMessage('保存容量が不足しています')
     }
-  }, [customImages, userId, imagesStorageKey])
+  }, [customImagesJson, userId, imagesStorageKey])
 
   async function loadUserCards(uid) {
     setIsLoading(true)
@@ -397,8 +408,16 @@ function App() {
 
   if (!authReady) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 text-zinc-300">
-        <p className="text-sm">読込中...</p>
+      <div className="relative flex min-h-screen flex-col bg-[radial-gradient(circle_at_20%_0%,#262626_0%,#0a0a0a_45%,#030303_100%)]">
+        <div className="flex justify-end px-4 pt-4 md:px-8">
+          <SupportButton variant="header" />
+        </div>
+        <div className="flex flex-1 items-center justify-center text-zinc-300">
+          <p className="text-sm">読込中...</p>
+        </div>
+        <div className="px-4 pb-6 md:px-8">
+          <AppFooter />
+        </div>
       </div>
     )
   }
@@ -416,8 +435,16 @@ function App() {
 
   if (!session) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_20%_0%,#262626_0%,#0a0a0a_45%,#030303_100%)] px-4 py-8 text-zinc-100">
-        <AuthPanel onAuth={setSession} />
+      <div className="relative flex min-h-screen flex-col bg-[radial-gradient(circle_at_20%_0%,#262626_0%,#0a0a0a_45%,#030303_100%)] text-zinc-100">
+        <div className="flex justify-end px-4 pt-4 md:px-8">
+          <SupportButton variant="header" />
+        </div>
+        <div className="flex flex-1 items-center justify-center px-4 py-8">
+          <AuthPanel onAuth={setSession} />
+        </div>
+        <div className="px-4 pb-6 md:px-8">
+          <AppFooter />
+        </div>
       </div>
     )
   }
@@ -439,7 +466,8 @@ function App() {
                 <p className="mt-2 text-xs text-amber-300/80">読込中...</p>
               ) : null}
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <SupportButton variant="header" />
               <button
                 type="button"
                 onClick={() => setShowProfile(true)}
@@ -699,6 +727,8 @@ function App() {
         )}
           </>
         )}
+
+        <AppFooter />
       </div>
 
       {showProfile ? (

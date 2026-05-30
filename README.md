@@ -112,6 +112,7 @@ npm run dev
 3. **Environment Variables** に追加:
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY`
+   - `VITE_OFUSE_URL`（任意・例: `https://ofuse.me/dai3waito`。未設定なら応援ボタン非表示）
 4. Deploy
 
 ## Supabase 側の設定（公開後必須）

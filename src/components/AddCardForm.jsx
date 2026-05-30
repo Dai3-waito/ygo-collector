@@ -116,17 +116,30 @@ export default function AddCardForm({
     [results],
   )
 
+  const advFilterKey = useMemo(
+    () =>
+      [
+        advFilters.mainType,
+        advFilters.subtype,
+        advFilters.race,
+        advFilters.attribute,
+        advFilters.theme,
+      ].join('|'),
+    [advFilters],
+  )
+
   useEffect(() => {
-    setImageLang(detectImageLangFromQuery(search))
+    const detected = detectImageLangFromQuery(search)
+    setImageLang((prev) => (prev === detected ? prev : detected))
   }, [search])
 
   useEffect(() => {
     const q = search.trim()
     const canSearch = q.length >= MIN_SEARCH_LENGTH || hasAdvFilters
     if (!canSearch) {
-      setResults([])
-      setSearchError('')
-      setIsSearching(false)
+      setResults((prev) => (prev.length === 0 ? prev : []))
+      setSearchError((prev) => (prev === '' ? prev : ''))
+      setIsSearching((prev) => (prev === false ? prev : false))
       return
     }
 
@@ -162,7 +175,7 @@ export default function AddCardForm({
       clearTimeout(timer)
       controller.abort()
     }
-  }, [search, imageLang, advFilters, hasAdvFilters])
+  }, [search, imageLang, advFilterKey, hasAdvFilters])
 
   useEffect(() => {
     if (!selectedPasscode) {
@@ -201,7 +214,7 @@ export default function AddCardForm({
       controller.abort()
       printsFetchGen.current += 1
     }
-  }, [selectedPasscode, searchMarket, selectedResultKey, setCodesFromSearch, selectedEntry?.cid])
+  }, [selectedPasscode, searchMarket, selectedResultKey, selectedEntry?.cid, setCodesFromSearch])
 
   useEffect(() => {
     const setCode = selectedPrint?.setCode
